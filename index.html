@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Beiming Minecraft Java 服务器官网：服务器状态、入服指南、公告规则、下载资源、百科与社区支持。"
+    />
+    <title>Beiming MC | Minecraft Java 服务器官网</title>
+    <link rel="preload" as="image" href="assets/hero-world.png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header" data-header>
+      <a class="brand" href="#home" aria-label="回到首页">
+        <span class="brand-mark" aria-hidden="true">B</span>
+        <span>
+          <strong>Beiming MC</strong>
+          <small>Java Server</small>
+        </span>
+      </a>
+
+      <button class="icon-button nav-toggle" type="button" aria-label="打开导航" data-nav-toggle>
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+
+      <nav class="nav" data-nav>
+        <a href="#status">状态</a>
+        <a href="#join">入服</a>
+        <a href="#news">公告</a>
+        <a href="#rules">规则</a>
+        <a href="#downloads">下载</a>
+        <a href="#wiki">百科</a>
+        <a href="#support">社区</a>
+      </nav>
+    </header>
+
+    <main id="home">
+      <section class="hero">
+        <img class="hero-image" src="assets/hero-world.png" alt="方块风格的服务器世界风景" />
+        <div class="hero-overlay"></div>
+        <div class="hero-content">
+          <p class="eyebrow">原版生存 · 轻量插件 · 长期开放</p>
+          <h1>Beiming MC</h1>
+          <p class="hero-copy">
+            一个面向 Java 玩家长期建设的服务器官网：状态、入服、公告、规则、下载、百科、工单和赞助入口都在这里。
+          </p>
+
+          <div class="server-card" aria-label="服务器连接信息">
+            <span class="server-label">服务器地址</span>
+            <strong data-server-host>play.beimingmc.com</strong>
+            <button class="copy-button" type="button" data-copy-ip>复制</button>
+          </div>
+
+          <div class="hero-actions">
+            <a class="primary-action" href="#join">立即入服</a>
+            <a class="secondary-action" href="#status">查看状态</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="quick-strip" aria-label="服务器摘要">
+        <div>
+          <span>版本</span>
+          <strong data-server-version>1.20.1 - 1.21.x</strong>
+        </div>
+        <div>
+          <span>玩法</span>
+          <strong>生存 / 经济 / 活动</strong>
+        </div>
+        <div>
+          <span>制度</span>
+          <strong>白名单审核</strong>
+        </div>
+        <div>
+          <span>社区</span>
+          <strong>QQ 群 123456789</strong>
+        </div>
+      </section>
+
+      <section class="section" id="features">
+        <div class="section-heading">
+          <p class="eyebrow">Server Hub</p>
+          <h2>官网覆盖服务器运营的关键入口</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="feature">
+            <span class="feature-icon">◆</span>
+            <h3>主城与传送</h3>
+            <p>展示主城坐标、公共设施、传送点、地标和新手保护区。</p>
+          </article>
+          <article class="feature">
+            <span class="feature-icon">◇</span>
+            <h3>经济与商店</h3>
+            <p>集中说明货币、玩家商店、交易规则、市场税率和补货周期。</p>
+          </article>
+          <article class="feature">
+            <span class="feature-icon">■</span>
+            <h3>领地保护</h3>
+            <p>整理圈地、权限、公共工程、拆迁申诉和建筑规范。</p>
+          </article>
+          <article class="feature">
+            <span class="feature-icon">▲</span>
+            <h3>活动副本</h3>
+            <p>发布节日活动、周常挑战、Boss 副本、排行榜和奖励兑换。</p>
+          </article>
+          <article class="feature">
+            <span class="feature-icon">●</span>
+            <h3>资源世界</h3>
+            <p>公示资源世界刷新时间、禁用机器、采集边界和危险提示。</p>
+          </article>
+          <article class="feature">
+            <span class="feature-icon">✦</span>
+            <h3>反作弊与工单</h3>
+            <p>提供举报、封禁申诉、Bug 反馈、误判处理和管理员联系入口。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section status-section" id="status">
+        <div class="section-heading">
+          <p class="eyebrow">Live Status</p>
+          <h2>服务器状态</h2>
+        </div>
+        <div class="status-layout">
+          <div class="status-panel">
+            <div class="status-topline">
+              <span class="status-dot" data-status-dot></span>
+              <strong data-status-label>正在检测</strong>
+              <button class="icon-text-button" type="button" data-refresh-status>刷新</button>
+            </div>
+            <dl class="status-list">
+              <div>
+                <dt>在线玩家</dt>
+                <dd data-status-players>-- / --</dd>
+              </div>
+              <div>
+                <dt>服务端版本</dt>
+                <dd data-status-version>--</dd>
+              </div>
+              <div>
+                <dt>延迟</dt>
+                <dd data-status-ping>--</dd>
+              </div>
+              <div>
+                <dt>MOTD</dt>
+                <dd data-status-motd>等待获取</dd>
+              </div>
+            </dl>
+          </div>
+          <aside class="notice-panel">
+            <h3>维护窗口</h3>
+            <p>每周三 03:00 - 05:00 可能进行备份、插件更新或地图维护。临时维护会优先发布在公告区和群内。</p>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section split-section" id="join">
+        <div class="section-heading">
+          <p class="eyebrow">Join</p>
+          <h2>三步进入服务器</h2>
+        </div>
+        <div class="steps">
+          <article>
+            <span>01</span>
+            <h3>准备 Java 版客户端</h3>
+            <p>推荐使用正版账号和稳定启动器，客户端版本请查看顶部摘要或状态卡片。</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>加入社区并申请白名单</h3>
+            <p>提交游戏 ID、年龄段、游玩方向和建筑截图。审核通过后会同步到白名单。</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>复制地址进入世界</h3>
+            <p>在多人游戏中添加服务器地址，首次进入请阅读出生点公告牌和新手指南。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="news">
+        <div class="section-heading">
+          <p class="eyebrow">News</p>
+          <h2>公告与活动</h2>
+        </div>
+        <div class="news-list">
+          <article>
+            <time datetime="2026-04-29">2026.04.29</time>
+            <h3>官网初版上线</h3>
+            <p>服务器状态、规则、下载、百科和工单入口已整理到同一页面。</p>
+          </article>
+          <article>
+            <time datetime="2026-05-01">2026.05.01</time>
+            <h3>五一建筑周</h3>
+            <p>主题为“港口与灯塔”，优秀作品将进入主城展示区。</p>
+          </article>
+          <article>
+            <time datetime="2026-05-08">2026.05.08</time>
+            <h3>资源世界刷新</h3>
+            <p>刷新后旧资源世界将保留 48 小时，请及时转移重要物品。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section rules-section" id="rules">
+        <div class="section-heading">
+          <p class="eyebrow">Rules</p>
+          <h2>服务器规则</h2>
+        </div>
+        <div class="tabs" role="tablist" aria-label="规则分类">
+          <button class="tab is-active" type="button" role="tab" aria-selected="true" data-rule-tab="basic">基本</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-rule-tab="build">建筑</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-rule-tab="trade">交易</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-rule-tab="appeal">申诉</button>
+        </div>
+        <div class="rule-content" data-rule-content>
+          <ul>
+            <li>禁止外挂、矿透、自动钓鱼、脚本刷物资和任何破坏公平性的工具。</li>
+            <li>禁止恶意破坏、盗窃、刷屏、人身攻击和未经允许进入他人领地。</li>
+            <li>发现漏洞请通过工单提交，不要传播或利用。</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="section" id="downloads">
+        <div class="section-heading">
+          <p class="eyebrow">Downloads</p>
+          <h2>下载与资源</h2>
+        </div>
+        <div class="download-grid" data-downloads></div>
+      </section>
+
+      <section class="section wiki-section" id="wiki">
+        <div class="section-heading">
+          <p class="eyebrow">Wiki</p>
+          <h2>服务器百科</h2>
+        </div>
+        <div class="wiki-tools">
+          <input type="search" placeholder="搜索：领地、经济、指令、活动..." aria-label="搜索百科" data-wiki-search />
+          <div class="wiki-filters" data-wiki-filters>
+            <button class="tag is-active" type="button" data-filter="all">全部</button>
+            <button class="tag" type="button" data-filter="guide">指南</button>
+            <button class="tag" type="button" data-filter="command">指令</button>
+            <button class="tag" type="button" data-filter="policy">制度</button>
+          </div>
+        </div>
+        <div class="wiki-grid" data-wiki-grid></div>
+      </section>
+
+      <section class="section support-section" id="support">
+        <div class="section-heading">
+          <p class="eyebrow">Community</p>
+          <h2>社区、工单与赞助</h2>
+        </div>
+        <div class="support-grid">
+          <article>
+            <h3>玩家社区</h3>
+            <p>加入 QQ 群获取白名单审核、维护通知、活动报名和玩家交易信息。</p>
+            <a href="#" data-community-link>加入社区</a>
+          </article>
+          <article>
+            <h3>工单中心</h3>
+            <p>用于举报、申诉、Bug 反馈、找回物品、建筑纠纷和权限申请。</p>
+            <a href="mailto:admin@beimingmc.com">发送邮件</a>
+          </article>
+          <article>
+            <h3>赞助支持</h3>
+            <p>赞助用于服务器硬件、带宽、备份、域名和活动奖励，不出售破坏平衡的特权。</p>
+            <a href="#rules">查看赞助原则</a>
+          </article>
+        </div>
+      </section>
+
+      <section class="section faq-section" id="faq">
+        <div class="section-heading">
+          <p class="eyebrow">FAQ</p>
+          <h2>常见问题</h2>
+        </div>
+        <details open>
+          <summary>服务器必须正版账号吗？</summary>
+          <p>建议使用正版账号。是否强制正版可在 `script.js` 的站点配置中调整文案。</p>
+        </details>
+        <details>
+          <summary>可以使用小地图或光影吗？</summary>
+          <p>允许纯显示类小地图、光影和性能优化 Mod。任何提供透视、自动操作或战斗优势的功能都不允许。</p>
+        </details>
+        <details>
+          <summary>死亡掉落、难度和刷怪规则是什么？</summary>
+          <p>建议在百科中维护为独立条目，便于版本更新后快速修改。</p>
+        </details>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <strong>Beiming MC</strong>
+      <span>© <span data-year></span> Minecraft Java Server. 本站与 Mojang 或 Microsoft 无隶属关系。</span>
+    </footer>
+
+    <div class="toast" role="status" aria-live="polite" data-toast></div>
+    <script src="script.js"></script>
+  </body>
+</html>
