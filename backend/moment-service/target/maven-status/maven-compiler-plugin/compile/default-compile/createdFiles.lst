@@ -1,0 +1,5 @@
+games\beiming\website\moment\service\impl\PingServiceImpl.class
+games\beiming\website\moment\config\MybatisPlusConfig.class
+games\beiming\website\moment\controller\PingController.class
+games\beiming\website\moment\service\PingService.class
+games\beiming\website\moment\MomentServiceApplication.class

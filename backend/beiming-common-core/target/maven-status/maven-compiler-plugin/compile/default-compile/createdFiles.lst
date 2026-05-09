@@ -1,0 +1,6 @@
+games\beiming\website\common\core\enums\ReviewStatus.class
+games\beiming\website\common\core\response\ApiResponse.class
+games\beiming\website\common\core\response\PageResult.class
+games\beiming\website\common\core\enums\ExamTrack.class
+games\beiming\website\common\core\enums\VisibilityScope.class
+games\beiming\website\common\core\result\ErrorCode.class

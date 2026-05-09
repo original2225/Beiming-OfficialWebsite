@@ -1,0 +1,5 @@
+games\beiming\website\attendance\service\impl\PingServiceImpl.class
+games\beiming\website\attendance\service\PingService.class
+games\beiming\website\attendance\config\MybatisPlusConfig.class
+games\beiming\website\attendance\AttendanceServiceApplication.class
+games\beiming\website\attendance\controller\PingController.class

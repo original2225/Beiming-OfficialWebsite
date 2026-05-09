@@ -1,0 +1,5 @@
+games\beiming\website\content\ContentServiceApplication.class
+games\beiming\website\content\service\impl\PingServiceImpl.class
+games\beiming\website\content\config\MybatisPlusConfig.class
+games\beiming\website\content\service\PingService.class
+games\beiming\website\content\controller\PingController.class

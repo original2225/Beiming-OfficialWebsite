@@ -1,0 +1,12 @@
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\controller\AuthPingController.java
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\dto\package-info.java
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\enums\package-info.java
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\entity\package-info.java
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\vo\AuthPingVO.java
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\feign\package-info.java
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\mapper\package-info.java
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\AuthServiceApplication.java
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\service\AuthPingService.java
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\service\impl\AuthPingServiceImpl.java
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\exception\package-info.java
+C:\Users\15780\Documents\GitHub\Beiming-OfficialWebsite\backend\auth-service\src\main\java\games\beiming\website\auth\config\MybatisPlusConfig.java

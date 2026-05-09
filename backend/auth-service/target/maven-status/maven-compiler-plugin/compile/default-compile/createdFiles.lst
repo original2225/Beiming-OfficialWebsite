@@ -1,0 +1,10 @@
+games\beiming\website\auth\controller\AuthTestConnectionController.class
+games\beiming\website\auth\service\AuthPingService.class
+games\beiming\website\auth\AuthServiceApplication.class
+games\beiming\website\auth\config\MybatisPlusConfig.class
+games\beiming\website\auth\vo\AuthTestConnectionVO.class
+games\beiming\website\auth\service\AuthTestConnectionService.class
+games\beiming\website\auth\vo\AuthPingVO.class
+games\beiming\website\auth\service\impl\AuthPingServiceImpl.class
+games\beiming\website\auth\controller\AuthPingController.class
+games\beiming\website\auth\service\impl\AuthTestConnectionServiceImpl.class
