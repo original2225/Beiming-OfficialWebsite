@@ -1,1 +1,4 @@
 games\beiming\website\auth\controller\AuthTestConnectionControllerTest.class
+games\beiming\website\auth\service\AuthAccountServiceImplTest.class
+games\beiming\website\auth\security\AuthPermissionAspectTest.class
+games\beiming\website\auth\security\AuthTokenServiceTest.class
