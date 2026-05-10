@@ -65,6 +65,10 @@ spring:
           uri: lb://admin-service
           predicates:
             - Path=/api/admin/**
+        - id: ops-service
+          uri: lb://ops-service
+          predicates:
+            - Path=/api/ops/**
 
 management:
   endpoints:

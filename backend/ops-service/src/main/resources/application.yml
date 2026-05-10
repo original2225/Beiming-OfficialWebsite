@@ -1,0 +1,21 @@
+server:
+  port: 9122
+
+spring:
+  application:
+    name: ops-service
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+
+beiming:
+  ops:
+    data-dir: ${BEIMING_OPS_DATA_DIR:../../data}
+    frontend-origin: ${FRONTEND_ORIGIN:http://127.0.0.1:5173}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

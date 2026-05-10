@@ -22,7 +22,7 @@ $env:NACOS_SERVER_ADDR="127.0.0.1:8848"
 
 公共模块里，beiming-common-core 放统一响应、分页对象、错误码和通用枚举。beiming-common-web 放全局异常处理和公共健康检查。beiming-common-security 放权限等级和权限注解，目前只是预留，真正的拦截校验还没实现。
 
-gateway-service 是入口网关，端口 9000，请求进来后按 `/api/**` 路径转发到 Nacos 里对应的服务。auth-service 端口 9101，负责后续账号、邀请码、登录、JWT 和权限身份。onboarding、exam、whitelist、attendance 会一起承接入服流程。guide、communication、server、profile、content、moment、notification、admin 分别承接指南、外部交流入口、服务器状态、成员档案、内容展示、素材投稿和审核、站内通知、后台管理。
+gateway-service 是入口网关，端口 9000，请求进来后按 `/api/**` 路径转发到 Nacos 里对应的服务。auth-service 端口 9101，负责后续账号、邀请码、登录、JWT 和权限身份。onboarding、exam、whitelist、attendance 会一起承接入服流程。guide、communication、server、profile、content、moment、notification、admin 分别承接指南、外部交流入口、服务器状态、成员档案、内容展示、素材投稿和审核、站内通知、后台管理。ops-service 端口 9122，负责远端 daemon 节点、Docker 容器、镜像、文件管理、日志、终端和创建进度。
 
 每个业务服务都按 Java 常见分层放目录：controller 接请求，service 写业务规则，mapper 做数据库读写，entity/dto/vo/enums/config/feign/exception 放各自类型。前端以后只走 gateway-service，不直接打某个业务服务端口。
 
@@ -36,6 +36,8 @@ Get-Content -LiteralPath ".\sql\init-p0-schemas.sql" -Raw | mysql --user=root --
 ```
 
 脚本只创建 P0 schema，不创建业务表。现在有 `beiming_auth`、`beiming_onboarding`、`beiming_server`、`beiming_guide`、`beiming_communication`、`beiming_exam`、`beiming_whitelist`、`beiming_attendance`、`beiming_profile`、`beiming_content`、`beiming_moment`、`beiming_notification`、`beiming_admin`。
+
+ops-service 当前不依赖 MySQL schema。远端 daemon 节点配置优先读取 `BEIMING_OPS_DATA_DIR/remote-nodes.json`，没有文件时读取 `REMOTE_NODES_JSON` 环境变量。
 
 ## 构建测试
 
@@ -56,12 +58,15 @@ mvn -pl auth-service -am -Dtest=AuthTestConnectionControllerTest -DfailIfNoTests
 ```powershell
 mvn -pl auth-service spring-boot:run
 mvn -pl gateway-service spring-boot:run
+mvn -pl ops-service spring-boot:run
 ```
 
 auth-service 自测地址是 `http://127.0.0.1:9101/api/auth/test-connection`。网关联通性地址是 `http://127.0.0.1:9000/api/auth/test-connection`。返回统一格式 `{ code, message, data }`，data 里能看到 `service=auth-service` 和 `message=gateway can reach auth-service`。
 
+ops-service 自测地址是 `http://127.0.0.1:9122/api/ops/ping`。经过网关访问是 `http://127.0.0.1:9000/api/ops/ping`。容器 REST 接口统一在 `/api/ops/nodes/{nodeId}/containers/**`，实时终端和创建进度 WebSocket 分别是 `ws://127.0.0.1:9122/ws/container-terminal` 和 `ws://127.0.0.1:9122/ws/container-create`。
+
 ## 同伴接入 Go/React 运维模块
 
-管理服务器容器、云盘资源、虚拟机这类能力可以作为独立 ops 微服务接入官网。推荐后端服务名用 `ops-service`，外部路径用 `/api/ops/**`，不要把运维逻辑塞进 admin-service。admin-service 更适合做后台聚合和权限入口，ops-service 负责真实的容器、云盘、虚拟机资源 API。
+管理服务器容器、云盘资源、虚拟机这类能力已经作为独立 ops 微服务接入官网。服务名是 `ops-service`，外部路径是 `/api/ops/**`，不要把运维逻辑塞进 admin-service。admin-service 更适合做后台聚合和权限入口，ops-service 负责真实的容器、云盘、虚拟机资源 API。
 
-Go 服务只要注册到同一个 Nacos，服务名叫 `ops-service`，网关加一条 `lb://ops-service` 路由即可接进现有链路。React 前端可以放在未来 `frontend/` 工程里，通过网关请求 `/api/ops/**`。
+节点侧 Go daemon 不需要注册 Nacos，只需要在 ops-service 的节点配置里登记 `daemonUrl` 和 `daemonToken`。React 前端可以放在未来 `frontend/` 工程里，通过网关请求 `/api/ops/**`，实时能力直连 ops-service 的 WebSocket。

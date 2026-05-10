@@ -1,0 +1,3 @@
+NACOS_SERVER_ADDR: 127.0.0.1:8848
+BEIMING_OPS_DATA_DIR: ../../data
+REMOTE_NODES_JSON: '[{"id":"primary-node","name":"Primary Docker Node","daemonUrl":"http://127.0.0.1:8790","daemonToken":"replace-with-daemon-token"}]'
