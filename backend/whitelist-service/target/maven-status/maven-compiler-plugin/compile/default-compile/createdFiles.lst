@@ -1,5 +1,0 @@
-games\beiming\website\whitelist\config\MybatisPlusConfig.class
-games\beiming\website\whitelist\service\impl\PingServiceImpl.class
-games\beiming\website\whitelist\service\PingService.class
-games\beiming\website\whitelist\controller\PingController.class
-games\beiming\website\whitelist\WhitelistServiceApplication.class

@@ -1,0 +1,30 @@
+{
+  "name": "beiming-user-center",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "db:migrate": "prisma migrate dev --schema ../prisma/schema.prisma",
+    "db:studio": "prisma studio --schema ../prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "@prisma/client": "6.19.2",
+    "@vitejs/plugin-react": "^5.1.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "lucide-react": "^0.561.0",
+    "monaco-editor": "^0.55.1",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.10"
+  },
+  "devDependencies": {
+    "playwright": "^1.59.1",
+    "prisma": "6.19.2"
+  }
+}

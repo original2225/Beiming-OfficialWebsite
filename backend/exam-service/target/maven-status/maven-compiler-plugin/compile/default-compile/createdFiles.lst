@@ -1,5 +1,0 @@
-games\beiming\website\exam\ExamServiceApplication.class
-games\beiming\website\exam\service\impl\PingServiceImpl.class
-games\beiming\website\exam\config\MybatisPlusConfig.class
-games\beiming\website\exam\controller\PingController.class
-games\beiming\website\exam\service\PingService.class

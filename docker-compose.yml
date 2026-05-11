@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: beiming-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: beiming
+      POSTGRES_PASSWORD: beiming_dev_password
+      POSTGRES_DB: beiming_cloud
+    ports:
+      - "54322:5432"
+    volumes:
+      - beiming-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beiming -d beiming_cloud"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  beiming-postgres-data:

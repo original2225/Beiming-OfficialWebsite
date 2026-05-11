@@ -1,0 +1,17 @@
+server:
+  address: ${API_HOST:127.0.0.1}
+  port: ${API_PORT:8787}
+
+spring:
+  application:
+    name: beiming-api-gateway
+  servlet:
+    multipart:
+      max-file-size: 16MB
+      max-request-size: 16MB
+
+beiming:
+  frontend-origin: ${FRONTEND_ORIGIN:http://127.0.0.1:5173}
+  services:
+    resource-url: ${RESOURCE_SERVICE_URL:http://127.0.0.1:8791}
+    auth-url: ${AUTH_SERVICE_URL:http://127.0.0.1:8792}

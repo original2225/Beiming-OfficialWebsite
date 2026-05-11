@@ -1,5 +1,0 @@
-games\beiming\website\notification\config\MybatisPlusConfig.class
-games\beiming\website\notification\service\PingService.class
-games\beiming\website\notification\controller\PingController.class
-games\beiming\website\notification\service\impl\PingServiceImpl.class
-games\beiming\website\notification\NotificationServiceApplication.class

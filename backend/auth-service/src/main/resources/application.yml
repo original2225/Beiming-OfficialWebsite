@@ -1,24 +1,22 @@
 server:
-  port: 9101
+  address: ${AUTH_SERVICE_HOST:127.0.0.1}
+  port: ${AUTH_SERVICE_PORT:8792}
 
 spring:
   application:
-    name: auth-service
-  cloud:
-    nacos:
-      discovery:
-        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+    name: beiming-auth-service
   datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/beiming_auth?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
-    username: ${MYSQL_USERNAME:root}
-    password: ${MYSQL_PASSWORD:}
-  redis:
-    host: ${REDIS_HOST:127.0.0.1}
-    port: ${REDIS_PORT:6379}
+    url: ${AUTH_DB_URL:jdbc:postgresql://192.168.1.5:5432/beiming?sslmode=disable}
+    username: ${AUTH_DB_USERNAME:beiming}
+    password: ${AUTH_DB_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
 
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info
+beiming:
+  frontend-origin: ${FRONTEND_ORIGIN:http://127.0.0.1:5173}
+  data-dir: ${BEIMING_DATA_DIR:../../data}
+  session-ttl-hours: ${BEIMING_SESSION_TTL_HOURS:168}
+  onedrive:
+    client-id: ${ONEDRIVE_CLIENT_ID:}
+    client-secret: ${ONEDRIVE_CLIENT_SECRET:}
+    redirect-uri: ${ONEDRIVE_REDIRECT_URI:http://localhost:8787/api/cloud/onedrive/callback}
+    tenant: ${ONEDRIVE_TENANT:common}

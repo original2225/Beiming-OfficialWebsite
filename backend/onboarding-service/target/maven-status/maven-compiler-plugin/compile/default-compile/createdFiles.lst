@@ -1,5 +1,0 @@
-games\beiming\website\onboarding\OnboardingServiceApplication.class
-games\beiming\website\onboarding\service\PingService.class
-games\beiming\website\onboarding\controller\PingController.class
-games\beiming\website\onboarding\config\MybatisPlusConfig.class
-games\beiming\website\onboarding\service\impl\PingServiceImpl.class

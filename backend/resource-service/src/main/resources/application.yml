@@ -1,0 +1,15 @@
+server:
+  address: ${RESOURCE_SERVICE_HOST:127.0.0.1}
+  port: ${RESOURCE_SERVICE_PORT:8791}
+
+spring:
+  application:
+    name: beiming-resource-service
+  servlet:
+    multipart:
+      max-file-size: 16MB
+      max-request-size: 16MB
+
+beiming:
+  frontend-origin: ${FRONTEND_ORIGIN:http://127.0.0.1:5173}
+  data-dir: ${BEIMING_DATA_DIR:../../data}

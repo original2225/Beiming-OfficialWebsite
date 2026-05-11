@@ -1,2 +1,0 @@
-org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
-games.beiming.website.common.web.config.CommonWebAutoConfiguration
