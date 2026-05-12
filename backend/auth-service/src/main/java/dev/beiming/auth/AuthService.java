@@ -22,6 +22,9 @@ import java.util.*;
 public class AuthService {
   private static final TypeReference<List<UserRecord>> USER_LIST = new TypeReference<>() {};
   private static final SecureRandom RANDOM = new SecureRandom();
+  private static final Set<String> ROLES = Set.of("SUPER_ADMIN", "ADMIN", "MEMBER");
+  private static final Set<String> USER_STATUSES = Set.of("ACTIVE", "DISABLED");
+  private static final long DEFAULT_INVITE_TTL_MS = 30L * 24L * 60L * 60L * 1000L;
 
   private final ObjectMapper mapper;
   private final JdbcTemplate jdbc;
@@ -41,6 +44,20 @@ public class AuthService {
     rs.getLong("last_login_at")
   ).normalized();
 
+  private final RowMapper<InviteCodeRecord> inviteCodeMapper = (rs, rowNum) -> new InviteCodeRecord(
+    rs.getString("id"),
+    rs.getString("code"),
+    rs.getString("type"),
+    rs.getString("role"),
+    rs.getString("status"),
+    rs.getInt("max_uses"),
+    rs.getInt("used_count"),
+    rs.getLong("expires_at"),
+    rs.getString("created_by"),
+    rs.getLong("created_at"),
+    rs.getLong("updated_at")
+  ).normalized();
+
   AuthService(ObjectMapper mapper, JdbcTemplate jdbc, @Value("${beiming.data-dir}") String dataDir, @Value("${beiming.session-ttl-hours}") long sessionTtlHours) {
     this.mapper = mapper;
     this.jdbc = jdbc;
@@ -58,6 +75,8 @@ public class AuthService {
     validateEmail(email);
     validatePassword(password);
     if (findUserByEmail(email).isPresent()) throw new ApiException(HttpStatus.CONFLICT, "邮箱已经注册");
+    var firstUser = countUsers() == 0;
+    var role = firstUser ? "SUPER_ADMIN" : consumeInviteCode(string(body.get("inviteCode")));
     var now = now();
     var salt = randomToken(18);
     var user = new UserRecord(
@@ -66,13 +85,14 @@ public class AuthService {
       email,
       hashPassword(password, salt),
       salt,
-      countUsers() == 0 ? "SUPER_ADMIN" : "MEMBER",
+      role,
       "ACTIVE",
       now,
       now,
       now
     ).normalized();
     insertUser(user);
+    if (!firstUser) recordInviteUsage(string(body.get("inviteCode")), user.id());
     return loginPayload(user);
   }
 
@@ -82,7 +102,7 @@ public class AuthService {
     validateEmail(email);
     var user = findUserByEmail(email).orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "邮箱或密码不正确"));
     if (!"ACTIVE".equals(user.status())) throw new ApiException(HttpStatus.FORBIDDEN, "账号已被禁用");
-    if (!MessageDigest.isEqual(hashPassword(password, user.passwordSalt()).getBytes(StandardCharsets.UTF_8), user.passwordHash().getBytes(StandardCharsets.UTF_8))) {
+    if (!passwordMatches(password, user)) {
       throw new ApiException(HttpStatus.UNAUTHORIZED, "邮箱或密码不正确");
     }
     updateUserLastLogin(user.id(), now());
@@ -94,27 +114,132 @@ public class AuthService {
     jdbc.update("delete from beiming_sessions where token_hash = ?", hashToken(token));
   }
 
+  synchronized Map<String, Object> logoutAll(String token) {
+    var user = requireUser(token);
+    jdbc.update("delete from beiming_sessions where user_id = ?", user.id());
+    return Map.of("loggedOut", true);
+  }
+
+  synchronized Map<String, Object> changePassword(String token, Map<String, Object> body) {
+    var user = requireUser(token);
+    var currentPassword = string(body.get("currentPassword"));
+    var newPassword = string(body.get("newPassword"));
+    validatePassword(newPassword);
+    if (!passwordMatches(currentPassword, user)) {
+      throw new ApiException(HttpStatus.UNAUTHORIZED, "当前密码不正确");
+    }
+    var now = now();
+    var salt = randomToken(18);
+    jdbc.update(
+      "update beiming_users set password_hash = ?, password_salt = ?, updated_at = ? where id = ?",
+      hashPassword(newPassword, salt),
+      salt,
+      now,
+      user.id()
+    );
+    jdbc.update("delete from beiming_sessions where user_id = ? and token_hash <> ?", user.id(), hashToken(token));
+    return Map.of("passwordChanged", true);
+  }
+
   synchronized Map<String, Object> me(String token) {
     return publicUser(requireUser(token));
   }
 
   synchronized List<Map<String, Object>> publicUsers(String token) {
-    requireUser(token);
+    requireAdmin(token);
     return allUsers().stream().map(this::publicUser).toList();
+  }
+
+  synchronized Map<String, Object> publicUser(String token, String userId) {
+    var actor = requireUser(token);
+    var target = getUserRecord(userId);
+    if ("MEMBER".equals(actor.role()) && !actor.id().equals(target.id())) {
+      throw new ApiException(HttpStatus.FORBIDDEN, "没有权限查看该用户");
+    }
+    if ("ADMIN".equals(actor.role()) && "SUPER_ADMIN".equals(target.role())) {
+      throw new ApiException(HttpStatus.FORBIDDEN, "没有权限查看超级管理员");
+    }
+    return publicUser(target);
+  }
+
+  synchronized Map<String, Object> createInviteCode(String token, Map<String, Object> body) {
+    var actor = requireAdmin(token);
+    var role = normalizeRole(body.getOrDefault("role", "MEMBER"));
+    if ("SUPER_ADMIN".equals(role)) throw new ApiException(HttpStatus.BAD_REQUEST, "不能创建超级管理员邀请码");
+    if ("ADMIN".equals(role) && !"SUPER_ADMIN".equals(actor.role())) {
+      throw new ApiException(HttpStatus.FORBIDDEN, "没有权限创建管理员邀请码");
+    }
+    var maxUses = (int) Math.max(1, number(body.getOrDefault("maxUses", 1)));
+    var now = now();
+    var expiresAt = number(body.get("expiresAt"));
+    if (expiresAt <= 0) expiresAt = now + DEFAULT_INVITE_TTL_MS;
+    if (expiresAt <= now) throw new ApiException(HttpStatus.BAD_REQUEST, "邀请码过期时间无效");
+    var invite = new InviteCodeRecord(
+      "invite-" + UUID.randomUUID().toString().substring(0, 8),
+      uniqueInviteCode(),
+      "ADMIN".equals(role) ? "ADMIN" : "MEMBER",
+      role,
+      "ACTIVE",
+      maxUses,
+      0,
+      expiresAt,
+      actor.id(),
+      now,
+      now
+    ).normalized();
+    insertInviteCode(invite);
+    return inviteCodeView(invite);
+  }
+
+  synchronized List<Map<String, Object>> inviteCodes(String token) {
+    requireAdmin(token);
+    return allInviteCodes().stream().map(this::inviteCodeView).toList();
+  }
+
+  synchronized Map<String, Object> disableInviteCode(String token, String inviteCodeId) {
+    var actor = requireAdmin(token);
+    var invite = getInviteCode(inviteCodeId);
+    if ("ADMIN".equals(actor.role()) && !"MEMBER".equals(invite.role())) {
+      throw new ApiException(HttpStatus.FORBIDDEN, "没有权限禁用该邀请码");
+    }
+    var now = now();
+    jdbc.update("update beiming_invite_codes set status = ?, updated_at = ? where id = ?", "DISABLED", now, invite.id());
+    return inviteCodeView(getInviteCode(invite.id()));
   }
 
   synchronized Map<String, Object> updateUser(String token, String userId, Map<String, Object> body) {
     var actor = requireUser(token);
-    if (!"SUPER_ADMIN".equals(actor.role()) && !actor.id().equals(userId)) {
+    var target = getUserRecord(userId);
+    if ("MEMBER".equals(actor.role()) && !actor.id().equals(userId)) {
       throw new ApiException(HttpStatus.FORBIDDEN, "没有权限修改该用户");
     }
-    var patch = new LinkedHashMap<>(body);
-    if (!"SUPER_ADMIN".equals(actor.role())) {
-      patch.remove("role");
-      patch.remove("status");
+    if ("ADMIN".equals(actor.role()) && "SUPER_ADMIN".equals(target.role())) {
+      throw new ApiException(HttpStatus.FORBIDDEN, "不能修改超级管理员");
     }
+    if ("ADMIN".equals(actor.role()) && "ADMIN".equals(target.role())) {
+      throw new ApiException(HttpStatus.FORBIDDEN, "不能修改管理员");
+    }
+    var patch = new LinkedHashMap<String, Object>();
+    if (body.containsKey("name")) patch.put("name", body.get("name"));
+    if ("MEMBER".equals(actor.role())) {
+      updateUser(userId, patch);
+      return publicUser(getUserRecord(userId));
+    }
+    if (body.containsKey("status")) patch.put("status", body.get("status"));
+    if ("SUPER_ADMIN".equals(actor.role()) && body.containsKey("role")) patch.put("role", body.get("role"));
+    protectSuperAdminChange(target, patch);
     updateUser(userId, patch);
     return publicUser(getUserRecord(userId));
+  }
+
+  synchronized Map<String, Object> revokeUserSessions(String token, String userId) {
+    var actor = requireAdmin(token);
+    var target = getUserRecord(userId);
+    if ("ADMIN".equals(actor.role()) && !"MEMBER".equals(target.role())) {
+      throw new ApiException(HttpStatus.FORBIDDEN, "没有权限踢出该用户");
+    }
+    jdbc.update("delete from beiming_sessions where user_id = ?", target.id());
+    return Map.of("revoked", true);
   }
 
   synchronized Map<String, Object> validate(String token) {
@@ -148,26 +273,38 @@ public class AuthService {
       now()
     );
     if (rows.isEmpty()) throw new ApiException(HttpStatus.UNAUTHORIZED, "登录已过期");
-    return rows.get(0);
+    var user = rows.get(0);
+    if (!"ACTIVE".equals(user.status())) throw new ApiException(HttpStatus.FORBIDDEN, "账号已被禁用");
+    return user;
+  }
+
+  private UserRecord requireAdmin(String token) {
+    var user = requireUser(token);
+    if (!Set.of("SUPER_ADMIN", "ADMIN").contains(user.role())) {
+      throw new ApiException(HttpStatus.FORBIDDEN, "没有管理员权限");
+    }
+    return user;
   }
 
   private void updateUser(String userId, Map<String, Object> patch) {
     var user = getUserRecord(userId);
+    var role = string(patch.getOrDefault("role", user.role())).trim();
+    var status = string(patch.getOrDefault("status", user.status())).trim();
     var next = new UserRecord(
       user.id(),
       string(patch.getOrDefault("name", user.name())).trim(),
       user.email(),
       user.passwordHash(),
       user.passwordSalt(),
-      string(patch.getOrDefault("role", user.role())).trim(),
-      string(patch.getOrDefault("status", user.status())).trim(),
+      role,
+      status,
       user.createdAt(),
       now(),
-      number(patch.getOrDefault("lastLoginAt", user.lastLoginAt()))
+      user.lastLoginAt()
     ).normalized();
     if (next.name().isBlank()) throw new ApiException(HttpStatus.BAD_REQUEST, "用户名不能为空");
-    if (!Set.of("SUPER_ADMIN", "ADMIN", "MEMBER").contains(next.role())) throw new ApiException(HttpStatus.BAD_REQUEST, "无效角色");
-    if (!Set.of("ACTIVE", "DISABLED").contains(next.status())) throw new ApiException(HttpStatus.BAD_REQUEST, "无效状态");
+    if (!ROLES.contains(next.role())) throw new ApiException(HttpStatus.BAD_REQUEST, "无效角色");
+    if (!USER_STATUSES.contains(next.status())) throw new ApiException(HttpStatus.BAD_REQUEST, "无效状态");
     jdbc.update(
       "update beiming_users set name = ?, role = ?, status = ?, updated_at = ?, last_login_at = ? where id = ?",
       next.name(),
@@ -204,6 +341,31 @@ public class AuthService {
     """);
     jdbc.execute("create index if not exists idx_beiming_sessions_user_id on beiming_sessions(user_id)");
     jdbc.execute("create index if not exists idx_beiming_sessions_expires_at on beiming_sessions(expires_at)");
+    jdbc.execute("""
+      create table if not exists beiming_invite_codes (
+        id varchar(64) primary key,
+        code varchar(64) not null unique,
+        type varchar(32) not null,
+        role varchar(32) not null,
+        status varchar(32) not null,
+        max_uses int not null,
+        used_count int not null,
+        expires_at bigint not null,
+        created_by varchar(64) not null,
+        created_at bigint not null,
+        updated_at bigint not null
+      )
+    """);
+    jdbc.execute("""
+      create table if not exists beiming_invite_code_usages (
+        id varchar(64) primary key,
+        invite_code_id varchar(64) not null,
+        user_id varchar(64) not null,
+        used_at bigint not null
+      )
+    """);
+    jdbc.execute("create index if not exists idx_beiming_invite_codes_code on beiming_invite_codes(code)");
+    jdbc.execute("create index if not exists idx_beiming_invite_code_usages_invite_code_id on beiming_invite_code_usages(invite_code_id)");
   }
 
   private void migrateLegacyUsers() {
@@ -241,9 +403,87 @@ public class AuthService {
     );
   }
 
+  private void insertInviteCode(InviteCodeRecord invite) {
+    jdbc.update(
+      """
+        insert into beiming_invite_codes
+        (id, code, type, role, status, max_uses, used_count, expires_at, created_by, created_at, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      """,
+      invite.id(),
+      invite.code(),
+      invite.type(),
+      invite.role(),
+      invite.status(),
+      invite.maxUses(),
+      invite.usedCount(),
+      invite.expiresAt(),
+      invite.createdBy(),
+      invite.createdAt(),
+      invite.updatedAt()
+    );
+  }
+
+  private void protectSuperAdminChange(UserRecord target, Map<String, Object> patch) {
+    if (!"SUPER_ADMIN".equals(target.role())) return;
+    var nextRole = string(patch.getOrDefault("role", target.role())).trim();
+    var nextStatus = string(patch.getOrDefault("status", target.status())).trim();
+    if (!"SUPER_ADMIN".equals(nextRole) || !"ACTIVE".equals(nextStatus)) {
+      var activeSuperAdmins = jdbc.queryForObject(
+        "select count(*) from beiming_users where role = ? and status = ?",
+        Integer.class,
+        "SUPER_ADMIN",
+        "ACTIVE"
+      );
+      if (activeSuperAdmins == null || activeSuperAdmins <= 1) {
+        throw new ApiException(HttpStatus.BAD_REQUEST, "至少保留一个可用超级管理员");
+      }
+    }
+  }
+
+  private String consumeInviteCode(String code) {
+    var normalizedCode = string(code).trim();
+    if (normalizedCode.isBlank()) throw new ApiException(HttpStatus.BAD_REQUEST, "邀请码不能为空");
+    var invite = findInviteCodeByCode(normalizedCode)
+      .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "邀请码无效"));
+    if (!"ACTIVE".equals(invite.status())) throw new ApiException(HttpStatus.BAD_REQUEST, "邀请码已禁用");
+    if (invite.expiresAt() <= now()) throw new ApiException(HttpStatus.BAD_REQUEST, "邀请码已过期");
+    if (invite.usedCount() >= invite.maxUses()) throw new ApiException(HttpStatus.BAD_REQUEST, "邀请码已用完");
+    return invite.role();
+  }
+
+  private void recordInviteUsage(String code, String userId) {
+    var invite = findInviteCodeByCode(code.trim())
+      .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "邀请码无效"));
+    var now = now();
+    jdbc.update(
+      "update beiming_invite_codes set used_count = used_count + 1, updated_at = ? where id = ?",
+      now,
+      invite.id()
+    );
+    jdbc.update(
+      "insert into beiming_invite_code_usages (id, invite_code_id, user_id, used_at) values (?, ?, ?, ?)",
+      "invite-use-" + UUID.randomUUID().toString().substring(0, 8),
+      invite.id(),
+      userId,
+      now
+    );
+  }
+
   private Optional<UserRecord> findUserByEmail(String email) {
     var rows = jdbc.query("select * from beiming_users where email = ?", userMapper, email);
     return rows.stream().findFirst();
+  }
+
+  private Optional<InviteCodeRecord> findInviteCodeByCode(String code) {
+    var rows = jdbc.query("select * from beiming_invite_codes where code = ?", inviteCodeMapper, code);
+    return rows.stream().findFirst();
+  }
+
+  private InviteCodeRecord getInviteCode(String inviteCodeId) {
+    var rows = jdbc.query("select * from beiming_invite_codes where id = ?", inviteCodeMapper, inviteCodeId);
+    if (rows.isEmpty()) throw new ApiException(HttpStatus.NOT_FOUND, "邀请码不存在");
+    return rows.get(0);
   }
 
   private UserRecord getUserRecord(String userId) {
@@ -254,6 +494,10 @@ public class AuthService {
 
   private List<UserRecord> allUsers() {
     return jdbc.query("select * from beiming_users order by created_at asc", userMapper);
+  }
+
+  private List<InviteCodeRecord> allInviteCodes() {
+    return jdbc.query("select * from beiming_invite_codes order by created_at asc", inviteCodeMapper);
   }
 
   private int countUsers() {
@@ -282,6 +526,29 @@ public class AuthService {
     return item;
   }
 
+  private Map<String, Object> inviteCodeView(InviteCodeRecord invite) {
+    Map<String, Object> item = new LinkedHashMap<>();
+    item.put("id", invite.id());
+    item.put("code", invite.code());
+    item.put("type", invite.type());
+    item.put("role", invite.role());
+    item.put("status", invite.status());
+    item.put("maxUses", invite.maxUses());
+    item.put("usedCount", invite.usedCount());
+    item.put("expiresAt", invite.expiresAt());
+    item.put("createdBy", invite.createdBy());
+    item.put("createdAt", invite.createdAt());
+    item.put("updatedAt", invite.updatedAt());
+    return item;
+  }
+
+  private boolean passwordMatches(String password, UserRecord user) {
+    return MessageDigest.isEqual(
+      hashPassword(password, user.passwordSalt()).getBytes(StandardCharsets.UTF_8),
+      user.passwordHash().getBytes(StandardCharsets.UTF_8)
+    );
+  }
+
   private String hashPassword(String password, String salt) {
     try {
       var spec = new PBEKeySpec(password.toCharArray(), salt.getBytes(StandardCharsets.UTF_8), 120_000, 256);
@@ -303,6 +570,20 @@ public class AuthService {
     var value = new byte[bytes];
     RANDOM.nextBytes(value);
     return Base64.getUrlEncoder().withoutPadding().encodeToString(value);
+  }
+
+  private String uniqueInviteCode() {
+    for (var attempt = 0; attempt < 5; attempt++) {
+      var code = randomToken(12);
+      if (findInviteCodeByCode(code).isEmpty()) return code;
+    }
+    throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "生成邀请码失败");
+  }
+
+  private String normalizeRole(Object value) {
+    var role = string(value).trim().toUpperCase(Locale.ROOT);
+    if (!ROLES.contains(role)) throw new ApiException(HttpStatus.BAD_REQUEST, "无效角色");
+    return role;
   }
 
   private void validateEmail(String email) {

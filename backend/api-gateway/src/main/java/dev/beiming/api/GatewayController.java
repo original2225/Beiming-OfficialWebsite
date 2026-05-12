@@ -71,6 +71,8 @@ public class GatewayController {
       || path.equals("/api/auth")
       || path.startsWith("/api/users")
       || path.equals("/api/users")
+      || path.startsWith("/api/invite-codes")
+      || path.equals("/api/invite-codes")
       || path.startsWith("/api/cloud/")
       || path.equals("/api/cloud");
   }
