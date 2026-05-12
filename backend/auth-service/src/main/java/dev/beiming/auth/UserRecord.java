@@ -19,8 +19,8 @@ public record UserRecord(
       clean(email).toLowerCase(),
       clean(passwordHash),
       clean(passwordSalt),
-      clean(role).isBlank() ? "MEMBER" : clean(role),
-      clean(status).isBlank() ? "ACTIVE" : clean(status),
+      UserRole.normalize(role).name(),
+      UserStatus.normalize(status).name(),
       createdAt,
       updatedAt,
       lastLoginAt

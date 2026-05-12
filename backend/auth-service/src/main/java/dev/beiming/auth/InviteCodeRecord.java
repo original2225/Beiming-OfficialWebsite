@@ -17,9 +17,9 @@ public record InviteCodeRecord(
     return new InviteCodeRecord(
       clean(id),
       clean(code),
-      clean(type).isBlank() ? "MEMBER" : clean(type),
-      clean(role).isBlank() ? "MEMBER" : clean(role),
-      clean(status).isBlank() ? "ACTIVE" : clean(status),
+      InviteCodeType.normalize(type).name(),
+      UserRole.normalize(role).name(),
+      InviteCodeStatus.normalize(status).name(),
       Math.max(1, maxUses),
       Math.max(0, usedCount),
       expiresAt,

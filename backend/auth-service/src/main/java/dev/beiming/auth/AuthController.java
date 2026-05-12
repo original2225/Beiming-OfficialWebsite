@@ -19,17 +19,17 @@ public class AuthController {
   }
 
   @PostMapping("/api/auth/register")
-  ApiEnvelope<Map<String, Object>> register(@RequestBody Map<String, Object> body) {
+  ApiEnvelope<LoginResponse> register(@RequestBody RegisterRequest body) {
     return ApiEnvelope.ok(auth.register(body));
   }
 
   @PostMapping("/api/auth/login")
-  ApiEnvelope<Map<String, Object>> login(@RequestBody Map<String, Object> body) {
+  ApiEnvelope<LoginResponse> login(@RequestBody LoginRequest body) {
     return ApiEnvelope.ok(auth.login(body));
   }
 
   @GetMapping("/api/auth/me")
-  ApiEnvelope<Map<String, Object>> me(@RequestHeader(value = "Authorization", defaultValue = "") String authorization) {
+  ApiEnvelope<PublicUserView> me(@RequestHeader(value = "Authorization", defaultValue = "") String authorization) {
     return ApiEnvelope.ok(auth.me(bearer(authorization)));
   }
 
@@ -47,7 +47,7 @@ public class AuthController {
   @PostMapping("/api/auth/change-password")
   ApiEnvelope<Map<String, Object>> changePassword(
     @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
-    @RequestBody Map<String, Object> body
+    @RequestBody ChangePasswordRequest body
   ) {
     return ApiEnvelope.ok(auth.changePassword(bearer(authorization), body));
   }
@@ -58,12 +58,12 @@ public class AuthController {
   }
 
   @GetMapping("/api/users")
-  ApiEnvelope<List<Map<String, Object>>> users(@RequestHeader(value = "Authorization", defaultValue = "") String authorization) {
+  ApiEnvelope<List<PublicUserView>> users(@RequestHeader(value = "Authorization", defaultValue = "") String authorization) {
     return ApiEnvelope.ok(auth.publicUsers(bearer(authorization)));
   }
 
   @GetMapping("/api/users/{userId}")
-  ApiEnvelope<Map<String, Object>> user(
+  ApiEnvelope<PublicUserView> user(
     @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
     @PathVariable String userId
   ) {
@@ -71,20 +71,20 @@ public class AuthController {
   }
 
   @PostMapping("/api/invite-codes")
-  ApiEnvelope<Map<String, Object>> createInviteCode(
+  ApiEnvelope<InviteCodeView> createInviteCode(
     @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
-    @RequestBody Map<String, Object> body
+    @RequestBody CreateInviteCodeRequest body
   ) {
     return ApiEnvelope.ok(auth.createInviteCode(bearer(authorization), body));
   }
 
   @GetMapping("/api/invite-codes")
-  ApiEnvelope<List<Map<String, Object>>> inviteCodes(@RequestHeader(value = "Authorization", defaultValue = "") String authorization) {
+  ApiEnvelope<List<InviteCodeView>> inviteCodes(@RequestHeader(value = "Authorization", defaultValue = "") String authorization) {
     return ApiEnvelope.ok(auth.inviteCodes(bearer(authorization)));
   }
 
   @PostMapping("/api/invite-codes/{inviteCodeId}/disable")
-  ApiEnvelope<Map<String, Object>> disableInviteCode(
+  ApiEnvelope<InviteCodeView> disableInviteCode(
     @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
     @PathVariable String inviteCodeId
   ) {
@@ -92,10 +92,10 @@ public class AuthController {
   }
 
   @PatchMapping("/api/users/{userId}")
-  ApiEnvelope<Map<String, Object>> updateUser(
+  ApiEnvelope<PublicUserView> updateUser(
     @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
     @PathVariable String userId,
-    @RequestBody Map<String, Object> body
+    @RequestBody UpdateUserRequest body
   ) {
     return ApiEnvelope.ok(auth.updateUser(bearer(authorization), userId, body));
   }

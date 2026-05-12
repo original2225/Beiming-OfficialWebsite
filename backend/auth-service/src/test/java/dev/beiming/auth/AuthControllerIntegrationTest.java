@@ -238,6 +238,13 @@ class AuthControllerIntegrationTest {
   }
 
   @Test
+  void unsupportedHttpMethodReturnsMethodNotAllowed() throws Exception {
+    mvc.perform(get("/api/auth/login"))
+      .andExpect(status().isMethodNotAllowed())
+      .andExpect(jsonPath("$.ok").value(false));
+  }
+
+  @Test
   void userCanChangePasswordAndOldPasswordStopsWorking() throws Exception {
     var user = register("Owner", "owner@example.com", "password123", null);
     var token = user.at("/data/token").asText();

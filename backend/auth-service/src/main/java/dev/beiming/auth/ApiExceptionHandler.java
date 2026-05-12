@@ -2,6 +2,7 @@ package dev.beiming.auth;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -16,6 +17,11 @@ public class ApiExceptionHandler {
   @ExceptionHandler(NoResourceFoundException.class)
   ResponseEntity<ApiEnvelope<Void>> handleNoResource(NoResourceFoundException error) {
     return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiEnvelope.error("Not found"));
+  }
+
+  @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+  ResponseEntity<ApiEnvelope<Void>> handleMethodNotSupported(HttpRequestMethodNotSupportedException error) {
+    return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(ApiEnvelope.error(error.getMessage()));
   }
 
   @ExceptionHandler(Exception.class)
