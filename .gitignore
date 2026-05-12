@@ -4,6 +4,7 @@ dist/
 frontend/dist/
 bin/
 data/
+.local-docs/
 backend/node-daemon/bin/
 backend/*/target/
 
