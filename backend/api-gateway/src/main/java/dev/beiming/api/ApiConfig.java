@@ -15,7 +15,7 @@ public class ApiConfig {
   CorsFilter corsFilter(@Value("${beiming.frontend-origin}") String frontendOrigin) {
     var config = new CorsConfiguration();
     config.setAllowedOrigins(List.of(frontendOrigin));
-    config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"));
+    config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"));
     config.setAllowedHeaders(List.of("*"));
     config.setExposedHeaders(List.of(
       "accept-ranges",

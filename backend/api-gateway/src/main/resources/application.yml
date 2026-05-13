@@ -15,3 +15,4 @@ beiming:
   services:
     resource-url: ${RESOURCE_SERVICE_URL:http://127.0.0.1:8791}
     auth-url: ${AUTH_SERVICE_URL:http://127.0.0.1:8792}
+    profile-url: ${PROFILE_SERVICE_URL:http://127.0.0.1:8793}

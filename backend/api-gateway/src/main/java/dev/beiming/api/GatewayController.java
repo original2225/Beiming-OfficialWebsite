@@ -37,14 +37,17 @@ public class GatewayController {
 
   private final String resourceUrl;
   private final String authUrl;
+  private final String profileUrl;
   private final HttpClient httpClient = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
 
   GatewayController(
     @Value("${beiming.services.resource-url}") String resourceUrl,
-    @Value("${beiming.services.auth-url}") String authUrl
+    @Value("${beiming.services.auth-url}") String authUrl,
+    @Value("${beiming.services.profile-url}") String profileUrl
   ) {
     this.resourceUrl = resourceUrl.replaceFirst("/+$", "");
     this.authUrl = authUrl.replaceFirst("/+$", "");
+    this.profileUrl = profileUrl.replaceFirst("/+$", "");
   }
 
   @GetMapping("/health")
@@ -52,18 +55,26 @@ public class GatewayController {
     return ApiEnvelope.ok(Map.of(
       "service", "beiming-api-gateway",
       "resourceService", resourceUrl,
-      "authService", authUrl
+      "authService", authUrl,
+      "profileService", profileUrl
     ));
   }
 
   @RequestMapping({"/api/**"})
   ResponseEntity<StreamingResponseBody> proxyApi(HttpServletRequest servletRequest) throws Exception {
-    var target = isAuthServicePath(servletRequest.getRequestURI()) ? authUrl : resourceUrl;
-    if (!isAuthServicePath(servletRequest.getRequestURI())) {
+    var path = servletRequest.getRequestURI();
+    var target = targetFor(path);
+    if (!isAuthServicePath(path) && !isPublicProfilePath(servletRequest.getMethod(), path)) {
       validateSession(servletRequest);
     }
     var upstream = forward(servletRequest, target);
     return stream(upstream, servletRequest.getMethod());
+  }
+
+  private String targetFor(String path) {
+    if (isAuthServicePath(path)) return authUrl;
+    if (isProfileServicePath(path)) return profileUrl;
+    return resourceUrl;
   }
 
   private boolean isAuthServicePath(String path) {
@@ -75,6 +86,18 @@ public class GatewayController {
       || path.equals("/api/invite-codes")
       || path.startsWith("/api/cloud/")
       || path.equals("/api/cloud");
+  }
+
+  private boolean isProfileServicePath(String path) {
+    return path.startsWith("/api/profile/") || path.equals("/api/profile");
+  }
+
+  private boolean isPublicProfilePath(String method, String path) {
+    if (!"GET".equalsIgnoreCase(method)) return false;
+    if (path.equals("/api/profile/members")) return true;
+    if (!path.startsWith("/api/profile/members/")) return false;
+    var tail = path.substring("/api/profile/members/".length());
+    return !tail.isBlank() && !tail.contains("/");
   }
 
   private void validateSession(HttpServletRequest servletRequest) throws Exception {

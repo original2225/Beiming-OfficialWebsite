@@ -46,7 +46,6 @@ public class NodeService {
       item.put("id", node.id());
       item.put("name", node.name());
       item.put("daemonUrl", node.daemonUrl());
-      item.put("daemonToken", node.daemonToken());
       item.put("auth", "daemon");
       item.put("hasDaemonToken", node.daemonToken() != null && !node.daemonToken().isBlank());
       return item;

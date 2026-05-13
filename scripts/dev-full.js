@@ -27,6 +27,16 @@ children.push(
     env: { ...env, RESOURCE_SERVICE_PORT: env.RESOURCE_SERVICE_PORT || '8791' },
   }),
   spawn(mvnCommand, ['spring-boot:run'], {
+    cwd: 'backend/profile-service',
+    stdio: 'inherit',
+    shell: isWindows,
+    env: {
+      ...env,
+      PROFILE_SERVICE_PORT: env.PROFILE_SERVICE_PORT || '8793',
+      AUTH_SERVICE_URL: env.AUTH_SERVICE_URL || 'http://127.0.0.1:8792',
+    },
+  }),
+  spawn(mvnCommand, ['spring-boot:run'], {
     cwd: 'backend/api-gateway',
     stdio: 'inherit',
     shell: isWindows,
@@ -35,6 +45,7 @@ children.push(
       API_PORT: env.API_PORT || '8787',
       RESOURCE_SERVICE_URL: env.RESOURCE_SERVICE_URL || 'http://127.0.0.1:8791',
       AUTH_SERVICE_URL: env.AUTH_SERVICE_URL || 'http://127.0.0.1:8792',
+      PROFILE_SERVICE_URL: env.PROFILE_SERVICE_URL || 'http://127.0.0.1:8793',
     },
   }),
   spawn(npmCommand, ['--prefix', 'frontend', 'run', 'dev', '--', '--port', '5173'], { stdio: 'inherit', shell: isWindows, env }),

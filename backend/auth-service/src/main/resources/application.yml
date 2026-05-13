@@ -10,6 +10,9 @@ spring:
     username: ${AUTH_DB_USERNAME:beiming}
     password: ${AUTH_DB_PASSWORD:}
     driver-class-name: org.postgresql.Driver
+  flyway:
+    baseline-on-migrate: true
+    baseline-version: 0
 
 beiming:
   frontend-origin: ${FRONTEND_ORIGIN:http://127.0.0.1:5173}

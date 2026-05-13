@@ -2,7 +2,8 @@ param(
   [int]$FrontendPort = 5173,
   [int]$ApiPort = 8787,
   [int]$ResourcePort = 8791,
-  [int]$AuthPort = 8792
+  [int]$AuthPort = 8792,
+  [int]$ProfilePort = 8793
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,8 +19,10 @@ Get-Content (Join-Path $root ".env") -ErrorAction SilentlyContinue | ForEach-Obj
 $env:API_PORT = "$ApiPort"
 $env:RESOURCE_SERVICE_PORT = "$ResourcePort"
 $env:AUTH_SERVICE_PORT = "$AuthPort"
+$env:PROFILE_SERVICE_PORT = "$ProfilePort"
 $env:RESOURCE_SERVICE_URL = "http://127.0.0.1:$ResourcePort"
 $env:AUTH_SERVICE_URL = "http://127.0.0.1:$AuthPort"
+$env:PROFILE_SERVICE_URL = "http://127.0.0.1:$ProfilePort"
 
 function Start-DbTunnelIfNeeded {
   if ($env:AUTH_DB_TUNNEL -eq "0" -or $env:AUTH_DB_TUNNEL -eq "false") { return }
@@ -65,6 +68,7 @@ function Start-BeimingProcess {
 Start-DbTunnelIfNeeded
 Start-BeimingProcess "Beiming Auth Service :$AuthPort" (Join-Path $root "backend/auth-service") "mvn spring-boot:run"
 Start-BeimingProcess "Beiming Resource Service :$ResourcePort" (Join-Path $root "backend/resource-service") "mvn spring-boot:run"
+Start-BeimingProcess "Beiming Profile Service :$ProfilePort" (Join-Path $root "backend/profile-service") "mvn spring-boot:run"
 Start-BeimingProcess "Beiming API Gateway :$ApiPort" (Join-Path $root "backend/api-gateway") "mvn spring-boot:run"
 Start-BeimingProcess "Beiming React Frontend :$FrontendPort" $root "npm --prefix frontend run dev -- --port $FrontendPort"
 
@@ -73,3 +77,4 @@ Write-Host "Frontend:       http://127.0.0.1:$FrontendPort"
 Write-Host "API Gateway:    http://127.0.0.1:$ApiPort"
 Write-Host "Auth:           http://127.0.0.1:$AuthPort"
 Write-Host "Resource:       http://127.0.0.1:$ResourcePort"
+Write-Host "Profile:        http://127.0.0.1:$ProfilePort"

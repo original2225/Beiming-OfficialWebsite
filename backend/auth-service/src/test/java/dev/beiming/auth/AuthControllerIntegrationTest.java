@@ -67,6 +67,13 @@ class AuthControllerIntegrationTest {
   }
 
   @Test
+  void authSchemaIsManagedByFlyway() {
+    assertThat(jdbc.queryForObject("select count(*) from flyway_schema_history", Integer.class)).isGreaterThan(0);
+    assertThat(jdbc.queryForObject("select count(*) from beiming_users", Integer.class)).isZero();
+    assertThat(jdbc.queryForObject("select count(*) from beiming_cloud_drives", Integer.class)).isZero();
+  }
+
+  @Test
   void superAdminCreatesInviteAndRegistrationConsumesIt() throws Exception {
     var adminToken = register("Owner", "owner@example.com", "password123", null).at("/data/token").asText();
     var invite = createInvite(adminToken, "MEMBER", 1);
