@@ -54,6 +54,28 @@ public class CommentRepository {
     return count == null ? 0 : count;
   }
 
+  int pageForComment(String postId, String commentId, boolean includeHidden, int pageSize) {
+    var visibilitySql = includeHidden ? "" : " and status = 'VISIBLE'";
+    var record = findById(commentId).orElseThrow();
+    var count = jdbc.queryForObject(
+      """
+        select count(*) from beiming_community_comments
+        where post_id = ?
+          and (
+            created_at < ?
+            or (created_at = ? and id <= ?)
+          )
+      """ + visibilitySql,
+      Integer.class,
+      postId,
+      record.createdAt(),
+      record.createdAt(),
+      commentId
+    );
+    var index = count == null ? 1 : Math.max(count, 1);
+    return Math.max(1, (int) Math.ceil(index / (double) pageSize));
+  }
+
   Optional<CommentRecord> findById(String commentId) {
     return jdbc.query("select * from beiming_community_comments where id = ?", mapper, commentId).stream().findFirst();
   }

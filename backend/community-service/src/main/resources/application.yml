@@ -19,3 +19,6 @@ beiming:
   services:
     auth-url: ${AUTH_SERVICE_URL:http://127.0.0.1:8792}
     profile-url: ${PROFILE_SERVICE_URL:http://127.0.0.1:8793}
+    notification-url: ${NOTIFICATION_SERVICE_URL:http://127.0.0.1:8795}
+  internal:
+    notification-token: ${NOTIFICATION_INTERNAL_TOKEN:}

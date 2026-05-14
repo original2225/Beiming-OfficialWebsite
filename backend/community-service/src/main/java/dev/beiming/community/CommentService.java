@@ -17,8 +17,9 @@ public class CommentService {
   private final ProfileClient profiles;
   private final RateLimitService rateLimits;
   private final AuditLogService auditLogs;
+  private final CommunityNotificationService notifications;
 
-  CommentService(CommentRepository comments, PostService posts, PostRepository postRepository, InteractionRepository interactions, AuthClient auth, ProfileClient profiles, RateLimitService rateLimits, AuditLogService auditLogs) {
+  CommentService(CommentRepository comments, PostService posts, PostRepository postRepository, InteractionRepository interactions, AuthClient auth, ProfileClient profiles, RateLimitService rateLimits, AuditLogService auditLogs, CommunityNotificationService notifications) {
     this.comments = comments;
     this.posts = posts;
     this.postRepository = postRepository;
@@ -27,15 +28,25 @@ public class CommentService {
     this.profiles = profiles;
     this.rateLimits = rateLimits;
     this.auditLogs = auditLogs;
+    this.notifications = notifications;
   }
 
-  PageResult<CommentView> list(String authorization, String postId, int page, int pageSize) {
+  PageResult<CommentView> list(String authorization, String postId, String commentId, int page, int pageSize) {
     var viewer = auth.optionalUser(authorization);
     var post = posts.requirePost(postId);
     if (!posts.canViewPost(viewer, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
-    var normalizedPage = CommunityRules.normalizePage(page);
     var normalizedSize = CommunityRules.normalizePageSize(pageSize);
     var includeHidden = viewer != null && viewer.isAdmin();
+    var normalizedPage = CommunityRules.normalizePage(page);
+    var targetCommentId = CommunityRules.clean(commentId);
+    if (!targetCommentId.isBlank()) {
+      var target = comments.findById(targetCommentId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "评论不存在"));
+      if (!target.postId().equals(postId)) throw new ApiException(HttpStatus.NOT_FOUND, "评论不存在");
+      if (!includeHidden && CommentStatus.parse(target.status()) != CommentStatus.VISIBLE) {
+        throw new ApiException(HttpStatus.NOT_FOUND, "评论不存在");
+      }
+      normalizedPage = comments.pageForComment(postId, targetCommentId, includeHidden, normalizedSize);
+    }
     var items = comments.pageByPostId(postId, includeHidden, normalizedPage, normalizedSize).stream()
       .map(comment -> CommentView.fromRecord(comment, viewer != null && interactions.hasCommentLike(comment.id(), viewer.id())))
       .toList();
@@ -76,6 +87,11 @@ public class CommentService {
     );
     comments.insert(comment);
     postRepository.adjustCommentCount(postId, 1);
+    if (parentId.isBlank()) {
+      notifications.notifyPostCommented(user, post, comment);
+    } else {
+      comments.findById(parentId).ifPresent(parent -> notifications.notifyCommentReplied(user, post, parent, comment));
+    }
     return CommentView.fromRecord(comment, false);
   }
 
@@ -151,6 +167,8 @@ public class CommentService {
     }
     auditLogs.record(user, "COMMENT_MODERATE", "COMMENT", commentId, nextStatus);
     var next = comments.findById(commentId).orElseThrow();
+    var post = posts.requirePost(next.postId());
+    notifications.notifyCommentModerated(user, post, next);
     return CommentView.fromRecord(next, false);
   }
 

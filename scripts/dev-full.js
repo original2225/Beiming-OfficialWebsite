@@ -37,6 +37,29 @@ children.push(
     },
   }),
   spawn(mvnCommand, ['spring-boot:run'], {
+    cwd: 'backend/notification-service',
+    stdio: 'inherit',
+    shell: isWindows,
+    env: {
+      ...env,
+      NOTIFICATION_SERVICE_PORT: env.NOTIFICATION_SERVICE_PORT || '8795',
+      AUTH_SERVICE_URL: env.AUTH_SERVICE_URL || 'http://127.0.0.1:8792',
+    },
+  }),
+  spawn(mvnCommand, ['spring-boot:run'], {
+    cwd: 'backend/community-service',
+    stdio: 'inherit',
+    shell: isWindows,
+    env: {
+      ...env,
+      COMMUNITY_SERVICE_PORT: env.COMMUNITY_SERVICE_PORT || '8794',
+      AUTH_SERVICE_URL: env.AUTH_SERVICE_URL || 'http://127.0.0.1:8792',
+      PROFILE_SERVICE_URL: env.PROFILE_SERVICE_URL || 'http://127.0.0.1:8793',
+      NOTIFICATION_SERVICE_URL: env.NOTIFICATION_SERVICE_URL || 'http://127.0.0.1:8795',
+      NOTIFICATION_INTERNAL_TOKEN: env.NOTIFICATION_INTERNAL_TOKEN || '',
+    },
+  }),
+  spawn(mvnCommand, ['spring-boot:run'], {
     cwd: 'backend/api-gateway',
     stdio: 'inherit',
     shell: isWindows,
@@ -46,6 +69,8 @@ children.push(
       RESOURCE_SERVICE_URL: env.RESOURCE_SERVICE_URL || 'http://127.0.0.1:8791',
       AUTH_SERVICE_URL: env.AUTH_SERVICE_URL || 'http://127.0.0.1:8792',
       PROFILE_SERVICE_URL: env.PROFILE_SERVICE_URL || 'http://127.0.0.1:8793',
+      COMMUNITY_SERVICE_URL: env.COMMUNITY_SERVICE_URL || 'http://127.0.0.1:8794',
+      NOTIFICATION_SERVICE_URL: env.NOTIFICATION_SERVICE_URL || 'http://127.0.0.1:8795',
     },
   }),
   spawn(npmCommand, ['--prefix', 'frontend', 'run', 'dev', '--', '--port', '5173'], { stdio: 'inherit', shell: isWindows, env }),

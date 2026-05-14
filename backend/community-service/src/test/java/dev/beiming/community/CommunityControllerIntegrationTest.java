@@ -58,6 +58,9 @@ class CommunityControllerIntegrationTest {
   @Autowired
   FakeProfileClient profiles;
 
+  @Autowired
+  FakeNotificationClient notifications;
+
   @BeforeEach
   void resetDatabase() {
     jdbc.execute("delete from beiming_community_audit_logs");
@@ -75,6 +78,7 @@ class CommunityControllerIntegrationTest {
     seedBoards();
     auth.reset();
     profiles.reset();
+    notifications.reset();
   }
 
   @Test
@@ -363,6 +367,28 @@ class CommunityControllerIntegrationTest {
   }
 
   @Test
+  void commentCreatesNotificationEventForPostAuthor() throws Exception {
+    auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    profiles.put("user-author", new AuthorSnapshot("user-author", "作者", "", "AuthorPlayer"));
+    profiles.put("user-member", new AuthorSnapshot("user-member", "评论者", "", "CommentPlayer"));
+    var postId = createPost("author-token", boardId("help"), "求助", "need help", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+
+    mvc.perform(post("/api/community/posts/" + postId + "/comments")
+        .header("Authorization", bearer("member-token"))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(json(Map.of("content", "先看日志"))))
+      .andExpect(status().isOk());
+
+    assertThat(notifications.events()).hasSize(1);
+    assertThat(notifications.events().getFirst().eventType()).isEqualTo("POST_COMMENTED");
+    assertThat(notifications.events().getFirst().recipientUserId()).isEqualTo("user-author");
+    assertThat(notifications.events().getFirst().actionUrl()).contains("/community/posts/" + postId).contains("commentId=");
+    assertThat(notifications.events().getFirst().payload()).containsEntry("postId", postId);
+    assertThat(notifications.events().getFirst().payload()).containsKey("commentId");
+  }
+
+  @Test
   void commentListIsPaginated() throws Exception {
     auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
     auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
@@ -377,6 +403,23 @@ class CommunityControllerIntegrationTest {
       .andExpect(jsonPath("$.data.page").value(2))
       .andExpect(jsonPath("$.data.pageSize").value(2))
       .andExpect(jsonPath("$.data.items.length()").value(1))
+      .andExpect(jsonPath("$.data.items[0].content").value("第三条"));
+  }
+
+  @Test
+  void commentListCanJumpToPageContainingSpecificComment() throws Exception {
+    auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    var postId = createPost("author-token", boardId("help"), "定位问题", "请教", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+    createComment("member-token", postId, "第一条");
+    createComment("member-token", postId, "第二条");
+    var targetCommentId = createComment("member-token", postId, "第三条").at("/data/id").asText();
+
+    mvc.perform(get("/api/community/posts/" + postId + "/comments?pageSize=2&commentId=" + targetCommentId).header("Authorization", bearer("member-token")))
+      .andExpect(status().isOk())
+      .andExpect(jsonPath("$.data.page").value(2))
+      .andExpect(jsonPath("$.data.items.length()").value(1))
+      .andExpect(jsonPath("$.data.items[0].id").value(targetCommentId))
       .andExpect(jsonPath("$.data.items[0].content").value("第三条"));
   }
 
@@ -420,6 +463,54 @@ class CommunityControllerIntegrationTest {
     mvc.perform(get("/api/community/me/favorites").header("Authorization", bearer("member-token")))
       .andExpect(status().isOk())
       .andExpect(jsonPath("$.data.items.length()").value(0));
+  }
+
+  @Test
+  void likeCreatesNotificationEventOnlyOnce() throws Exception {
+    auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    profiles.put("user-author", new AuthorSnapshot("user-author", "作者", "", "AuthorPlayer"));
+    var postId = createPost("author-token", boardId("resources"), "资源发布", "download", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+
+    mvc.perform(post("/api/community/posts/" + postId + "/reactions").header("Authorization", bearer("member-token")))
+      .andExpect(status().isOk());
+    mvc.perform(post("/api/community/posts/" + postId + "/reactions").header("Authorization", bearer("member-token")))
+      .andExpect(status().isOk());
+
+    assertThat(notifications.events()).hasSize(1);
+    assertThat(notifications.events().getFirst().eventType()).isEqualTo("POST_LIKED");
+  }
+
+  @Test
+  void notificationFailureDoesNotFailCommentCreation() throws Exception {
+    auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    profiles.put("user-author", new AuthorSnapshot("user-author", "作者", "", "AuthorPlayer"));
+    profiles.put("user-member", new AuthorSnapshot("user-member", "评论者", "", "CommentPlayer"));
+    notifications.failAll();
+    var postId = createPost("author-token", boardId("help"), "求助", "need help", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+
+    mvc.perform(post("/api/community/posts/" + postId + "/comments")
+        .header("Authorization", bearer("member-token"))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(json(Map.of("content", "先看日志"))))
+      .andExpect(status().isOk())
+      .andExpect(jsonPath("$.data.content").value("先看日志"));
+
+    assertThat(jdbc.queryForObject("select count(*) from beiming_community_comments where post_id = ?", Integer.class, postId)).isEqualTo(1);
+  }
+
+  @Test
+  void notificationFailureDoesNotFailLikeAction() throws Exception {
+    auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    notifications.failAll();
+    var postId = createPost("author-token", boardId("resources"), "资源发布", "download", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+
+    mvc.perform(post("/api/community/posts/" + postId + "/reactions").header("Authorization", bearer("member-token")))
+      .andExpect(status().isOk());
+
+    assertThat(jdbc.queryForObject("select like_count from beiming_community_posts where id = ?", Long.class, postId)).isEqualTo(1L);
   }
 
   @Test
@@ -519,9 +610,56 @@ class CommunityControllerIntegrationTest {
       .andExpect(status().isOk())
       .andExpect(jsonPath("$.data.status").value("RESOLVED"));
 
+    assertThat(notifications.events()).extracting(CreateNotificationEventRequest::eventType)
+      .contains("REPORT_REVIEWED");
+    var reportEvent = notifications.events().stream()
+      .filter(item -> "REPORT_REVIEWED".equals(item.eventType()))
+      .findFirst()
+      .orElseThrow();
+    assertThat(reportEvent.actionUrl()).isEqualTo("/community/posts/" + postId);
+    assertThat(reportEvent.payload()).containsEntry("reportId", reportId);
+    assertThat(reportEvent.payload()).containsEntry("targetType", "POST");
+    assertThat(reportEvent.payload()).containsEntry("targetId", postId);
+
     mvc.perform(get("/api/community/admin/audit-logs").header("Authorization", bearer("admin-token")))
       .andExpect(status().isOk())
       .andExpect(jsonPath("$.data.items[0].action").value("REPORT_REVIEW"));
+  }
+
+  @Test
+  void commentReportReviewNotificationIncludesPostAndCommentLocation() throws Exception {
+    auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    auth.login("admin-token", new CurrentUserView("user-admin", "Admin", "admin@example.com", "ADMIN"));
+    var postId = createPost("author-token", boardId("help"), "评论举报", "need help", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+    var commentId = createComment("author-token", postId, "有问题的评论").at("/data/id").asText();
+
+    var response = mvc.perform(post("/api/community/comments/" + commentId + "/reports")
+        .header("Authorization", bearer("member-token"))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(json(Map.of("reason", "SPAM", "detail", "评论违规"))))
+      .andExpect(status().isOk())
+      .andReturn()
+      .getResponse()
+      .getContentAsString();
+
+    var reportId = mapper.readTree(response).at("/data/id").asText();
+
+    mvc.perform(put("/api/community/admin/reports/" + reportId)
+        .header("Authorization", bearer("admin-token"))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(json(Map.of("status", "RESOLVED", "reviewNote", "已处理"))))
+      .andExpect(status().isOk())
+      .andExpect(jsonPath("$.data.status").value("RESOLVED"));
+
+    var reportEvent = notifications.events().stream()
+      .filter(item -> "REPORT_REVIEWED".equals(item.eventType()))
+      .reduce((first, second) -> second)
+      .orElseThrow();
+    assertThat(reportEvent.actionUrl()).isEqualTo("/community/posts/" + postId + "?commentId=" + commentId);
+    assertThat(reportEvent.payload()).containsEntry("postId", postId);
+    assertThat(reportEvent.payload()).containsEntry("commentId", commentId);
+    assertThat(reportEvent.payload()).containsEntry("targetType", "COMMENT");
   }
 
   @Test
@@ -639,6 +777,30 @@ class CommunityControllerIntegrationTest {
       .andExpect(jsonPath("$.data.status").value("PUBLISHED"));
   }
 
+  @Test
+  void moderationCreatesNotificationForContentAuthor() throws Exception {
+    auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    auth.login("admin-token", new CurrentUserView("user-admin", "Admin", "admin@example.com", "ADMIN"));
+    var postId = createPost("author-token", boardId("building"), "作品", "作品内容", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+    var commentId = createComment("member-token", postId, "不合规").at("/data/id").asText();
+
+    mvc.perform(put("/api/community/admin/posts/" + postId + "/moderation")
+        .header("Authorization", bearer("admin-token"))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(json(Map.of("hidden", true, "moderationNote", "暂停展示"))))
+      .andExpect(status().isOk());
+
+    mvc.perform(put("/api/community/admin/comments/" + commentId + "/moderation")
+        .header("Authorization", bearer("admin-token"))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(json(Map.of("hidden", true, "moderationNote", "先隐藏"))))
+      .andExpect(status().isOk());
+
+    assertThat(notifications.events()).extracting(CreateNotificationEventRequest::eventType)
+      .contains("POST_MODERATED", "COMMENT_MODERATED");
+  }
+
   private void seedBoards() {
     insertBoard("board-announcements", "announcements", "公告区", "官方公告和规则", "PUBLIC", "ADMIN", 10);
     insertBoard("board-modpacks", "modpacks", "整合包区", "整合包发布和讨论", "PUBLIC", "MEMBER", 20);
@@ -722,6 +884,12 @@ class CommunityControllerIntegrationTest {
     FakeProfileClient fakeProfileClient() {
       return new FakeProfileClient();
     }
+
+    @Bean
+    @Primary
+    FakeNotificationClient fakeNotificationClient() {
+      return new FakeNotificationClient();
+    }
   }
 
   static class FakeAuthClient implements AuthClient {
@@ -768,6 +936,30 @@ class CommunityControllerIntegrationTest {
     @Override
     public AuthorSnapshot resolve(String authorization, CurrentUserView user) {
       return snapshots.getOrDefault(user.id(), AuthorSnapshot.fromUser(user));
+    }
+  }
+
+  static class FakeNotificationClient implements NotificationClient {
+    private final List<CreateNotificationEventRequest> events = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private volatile boolean failAll;
+
+    @Override
+    public void createEvent(CreateNotificationEventRequest request) {
+      if (failAll) throw new IllegalStateException("notification down");
+      events.add(request);
+    }
+
+    void failAll() {
+      failAll = true;
+    }
+
+    void reset() {
+      events.clear();
+      failAll = false;
+    }
+
+    List<CreateNotificationEventRequest> events() {
+      return events;
     }
   }
 }

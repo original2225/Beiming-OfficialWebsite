@@ -39,18 +39,21 @@ public class GatewayController {
   private final String authUrl;
   private final String profileUrl;
   private final String communityUrl;
+  private final String notificationUrl;
   private final HttpClient httpClient = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
 
   GatewayController(
     @Value("${beiming.services.resource-url}") String resourceUrl,
     @Value("${beiming.services.auth-url}") String authUrl,
     @Value("${beiming.services.profile-url}") String profileUrl,
-    @Value("${beiming.services.community-url}") String communityUrl
+    @Value("${beiming.services.community-url}") String communityUrl,
+    @Value("${beiming.services.notification-url}") String notificationUrl
   ) {
     this.resourceUrl = resourceUrl.replaceFirst("/+$", "");
     this.authUrl = authUrl.replaceFirst("/+$", "");
     this.profileUrl = profileUrl.replaceFirst("/+$", "");
     this.communityUrl = communityUrl.replaceFirst("/+$", "");
+    this.notificationUrl = notificationUrl.replaceFirst("/+$", "");
   }
 
   @GetMapping("/health")
@@ -60,7 +63,8 @@ public class GatewayController {
       "resourceService", resourceUrl,
       "authService", authUrl,
       "profileService", profileUrl,
-      "communityService", communityUrl
+      "communityService", communityUrl,
+      "notificationService", notificationUrl
     ));
   }
 
@@ -79,6 +83,7 @@ public class GatewayController {
     if (isAuthServicePath(path)) return authUrl;
     if (isProfileServicePath(path)) return profileUrl;
     if (isCommunityServicePath(path)) return communityUrl;
+    if (isNotificationServicePath(path)) return notificationUrl;
     return resourceUrl;
   }
 
@@ -99,6 +104,10 @@ public class GatewayController {
 
   private boolean isCommunityServicePath(String path) {
     return path.startsWith("/api/community/") || path.equals("/api/community");
+  }
+
+  private boolean isNotificationServicePath(String path) {
+    return path.startsWith("/api/notifications/") || path.equals("/api/notifications");
   }
 
   private boolean isPublicProfilePath(String method, String path) {

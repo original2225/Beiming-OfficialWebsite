@@ -17,8 +17,9 @@ public class PostService {
   private final PollService polls;
   private final RateLimitService rateLimits;
   private final AuditLogService auditLogs;
+  private final CommunityNotificationService notifications;
 
-  PostService(PostRepository posts, BoardRepository boards, InteractionRepository interactions, AuthClient auth, ProfileClient profiles, PollService polls, RateLimitService rateLimits, AuditLogService auditLogs) {
+  PostService(PostRepository posts, BoardRepository boards, InteractionRepository interactions, AuthClient auth, ProfileClient profiles, PollService polls, RateLimitService rateLimits, AuditLogService auditLogs, CommunityNotificationService notifications) {
     this.posts = posts;
     this.boards = boards;
     this.interactions = interactions;
@@ -27,6 +28,7 @@ public class PostService {
     this.polls = polls;
     this.rateLimits = rateLimits;
     this.auditLogs = auditLogs;
+    this.notifications = notifications;
   }
 
   PageResult<PostSummaryView> publicPosts(String authorization, String boardId, int page, int pageSize, String q, String sort) {
@@ -208,6 +210,7 @@ public class PostService {
       request.moderationNote() == null ? current.moderationNote() : CommunityRules.clean(request.moderationNote())
     );
     posts.update(next);
+    notifications.notifyPostModerated(user, next);
     return toDetail(next, user, authorization);
   }
 

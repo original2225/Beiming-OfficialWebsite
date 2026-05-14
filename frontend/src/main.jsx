@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   AlertCircle,
+  Bell,
   Check,
   Eye,
   LogIn,
@@ -35,13 +36,31 @@ import {
   login,
   readSession,
   reportCommunityPost,
+  archiveNotification,
+  getNotificationUnreadCount,
+  getNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
   unfavoriteCommunityPost,
   unlikeCommunityPost,
   updateAdminMember,
   updateProfileMe,
   voteCommunityPoll,
 } from './api.js';
+import { Avatar, NotificationPanel, Panel } from './components.jsx';
 import './styles.css';
+
+const notificationFilters = ['ALL', 'UNREAD', 'READ', 'ARCHIVED'];
+const notificationTypeOptions = [
+  '',
+  'POST_COMMENTED',
+  'COMMENT_REPLIED',
+  'POST_LIKED',
+  'COMMENT_LIKED',
+  'REPORT_REVIEWED',
+  'POST_MODERATED',
+  'COMMENT_MODERATED',
+];
 
 const emptyProfileForm = {
   displayName: '',
@@ -83,6 +102,12 @@ function App() {
   const [comments, setComments] = useState({ items: [], page: 1, pageSize: 10, total: 0 });
   const [postForm, setPostForm] = useState(emptyPostForm);
   const [commentText, setCommentText] = useState('');
+  const [notificationStatus, setNotificationStatus] = useState('ALL');
+  const [notificationType, setNotificationType] = useState('');
+  const [notifications, setNotifications] = useState({ items: [], page: 1, pageSize: 20, total: 0 });
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [highlightedCommentId, setHighlightedCommentId] = useState('');
+  const notificationPanelRef = useRef(null);
 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
 
@@ -92,8 +117,24 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (token) loadPrivateState();
+    if (token) {
+      loadPrivateState();
+      return;
+    }
+    setNotifications({ items: [], page: 1, pageSize: 20, total: 0 });
+    setUnreadCount(0);
   }, [token]);
+
+  useEffect(() => {
+    if (token) loadNotifications({ status: notificationStatus, type: notificationType, page: 1 });
+  }, [token, notificationStatus, notificationType]);
+
+  useEffect(() => {
+    if (!highlightedCommentId) return;
+    const target = document.getElementById(`comment-${highlightedCommentId}`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [comments, highlightedCommentId]);
 
   async function run(label, action) {
     setBusy(label);
@@ -185,6 +226,7 @@ function App() {
     setNotice('评论已发布');
     const nextComments = await getCommunityComments(selectedPost.id, { pageSize: 10 });
     setComments(nextComments);
+    await loadNotifications(notificationStatus);
   }
 
   async function togglePostLike() {
@@ -203,6 +245,7 @@ function App() {
     if (!selectedPost) return;
     const data = await run('report-post', () => reportCommunityPost(selectedPost.id, { reason: 'SPAM', detail: '前端人工测试举报' }));
     if (data) setNotice('举报已提交');
+    await loadNotifications(notificationStatus);
   }
 
   async function votePoll(optionId) {
@@ -231,6 +274,23 @@ function App() {
     });
   }
 
+  async function loadNotifications(query = {}) {
+    return run('notifications', async () => {
+      const [nextList, nextCount] = await Promise.all([
+        getNotifications({
+          status: query.status ?? notificationStatus,
+          type: query.type ?? notificationType,
+          page: query.page ?? 1,
+          pageSize: 20,
+        }),
+        getNotificationUnreadCount(),
+      ]);
+      setNotifications(nextList);
+      setUnreadCount(nextCount.unreadCount || 0);
+      return nextList;
+    });
+  }
+
   async function submitLogin(event) {
     event.preventDefault();
     const data = await run('login', () => login(loginForm.email, loginForm.password));
@@ -247,6 +307,8 @@ function App() {
     setProfile(null);
     setProfileForm(emptyProfileForm);
     setAdminMembers({ items: [], page: 1, pageSize: 50, total: 0 });
+    setNotifications({ items: [], page: 1, pageSize: 20, total: 0 });
+    setUnreadCount(0);
     setNotice('已退出');
   }
 
@@ -286,6 +348,56 @@ function App() {
     loadPublicMembers();
   }
 
+  async function openNotification(item) {
+    if (!item) return;
+    if (item.status === 'UNREAD') {
+      await run('notification-open', async () => {
+        await markNotificationRead(item.id);
+        setNotice('通知已标为已读');
+      });
+    }
+    const payload = parseNotificationPayload(item.payloadJson);
+    const postId = payload.postId || extractPostId(item.actionUrl);
+    const commentId = payload.commentId || payload.parentCommentId || extractCommentId(item.actionUrl);
+    if (postId) {
+      await openPost(postId);
+      if (commentId) {
+        await focusComment(postId, commentId);
+      } else {
+        setHighlightedCommentId('');
+      }
+    }
+    await loadNotifications({ status: notificationStatus, type: notificationType, page: notifications.page || 1 });
+  }
+
+  async function markAllRead() {
+    const data = await run('notification-read-all', () => markAllNotificationsRead());
+    if (!data) return;
+    setNotice(`已处理 ${data.updated} 条未读通知`);
+    await loadNotifications({ status: notificationStatus, type: notificationType, page: notifications.page || 1 });
+  }
+
+  async function archiveOneNotification(notificationId) {
+    const data = await run('notification-archive', () => archiveNotification(notificationId));
+    if (!data) return;
+    setNotice('通知已归档');
+    const currentPage = notifications.items.length === 1 && (notifications.page || 1) > 1
+      ? (notifications.page || 1) - 1
+      : (notifications.page || 1);
+    await loadNotifications({ status: notificationStatus, type: notificationType, page: currentPage });
+  }
+
+  async function focusComment(postId, commentId) {
+    const pageData = await getCommunityComments(postId, { pageSize: 50, commentId });
+    setComments(pageData);
+    setHighlightedCommentId(pageData.items.some((item) => item.id === commentId) ? commentId : '');
+  }
+
+  async function goToNotificationPage(page) {
+    if (page < 1) return;
+    await loadNotifications({ status: notificationStatus, type: notificationType, page });
+  }
+
   const selectedMeta = useMemo(() => {
     if (!selectedMember) return '';
     return `${selectedMember.memberGroup} · ${selectedMember.memberStatus} · ${selectedMember.visibility}`;
@@ -301,6 +413,15 @@ function App() {
         <div className="session">
           {user ? (
             <>
+              <button
+                className="icon-button notification-button"
+                onClick={() => notificationPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                title="通知中心"
+                type="button"
+              >
+                <Bell size={18} />
+                {unreadCount > 0 && <span className="notification-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>}
+              </button>
               <span>{user.name}</span>
               <span className="role">{user.role}</span>
               <button className="icon-button" onClick={logout} title="退出登录" type="button">
@@ -401,6 +522,25 @@ function App() {
           )}
         </Panel>
       </section>
+
+      <NotificationPanel
+        formatTime={formatTime}
+        notificationFilters={notificationFilters}
+        notificationPanelRef={notificationPanelRef}
+        notificationStatus={notificationStatus}
+        notificationType={notificationType}
+        notificationTypeOptions={notificationTypeOptions}
+        notifications={notifications}
+        onArchive={archiveOneNotification}
+        onChangeStatus={setNotificationStatus}
+        onChangeType={setNotificationType}
+        onOpen={openNotification}
+        onPageChange={goToNotificationPage}
+        onReadAll={markAllRead}
+        onRefresh={() => loadNotifications({ status: notificationStatus, type: notificationType, page: notifications.page || 1 })}
+        token={token}
+        unreadCount={unreadCount}
+      />
 
       <section className="community-layout">
         <Panel icon={<MessageSquare size={18} />} title="社区论坛">
@@ -534,7 +674,7 @@ function App() {
             <>
               <div className="comment-list">
                 {comments.items.map((item) => (
-                  <article className="comment-row" key={item.id}>
+                  <article className={item.id === highlightedCommentId ? 'comment-row highlighted' : 'comment-row'} id={`comment-${item.id}`} key={item.id}>
                     <strong>{item.authorDisplayName}</strong>
                     <p>{item.content}</p>
                     <small>{formatTime(item.createdAt)} · 赞 {item.likeCount}</small>
@@ -669,30 +809,30 @@ function App() {
   );
 }
 
-function Panel({ children, icon, title }) {
-  return (
-    <section className="panel">
-      <header className="panel-title">
-        {icon}
-        <h2>{title}</h2>
-      </header>
-      {children}
-    </section>
-  );
-}
-
-function Avatar({ profile, large = false }) {
-  const source = profile.avatarUrl || profile.skinUrl;
-  return (
-    <div className={large ? 'avatar large' : 'avatar'}>
-      {source ? <img alt="" src={source} /> : <User size={large ? 34 : 22} />}
-    </div>
-  );
-}
-
 function formatTime(value) {
   if (!value) return '未设置';
   return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(new Date(value));
+}
+
+function extractPostId(actionUrl) {
+  const value = String(actionUrl || '').trim();
+  const match = value.match(/\/community\/posts\/([^/?#]+)/);
+  return match?.[1] ? decodeURIComponent(match[1]) : '';
+}
+
+function extractCommentId(actionUrl) {
+  const value = String(actionUrl || '').trim();
+  const commentId = new URLSearchParams(value.split('?')[1] || '').get('commentId');
+  return commentId ? decodeURIComponent(commentId) : '';
+}
+
+function parseNotificationPayload(payloadJson) {
+  try {
+    const parsed = JSON.parse(payloadJson || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 createRoot(document.getElementById('root')).render(<App />);

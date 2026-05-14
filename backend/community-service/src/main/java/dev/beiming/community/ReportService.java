@@ -14,14 +14,16 @@ public class ReportService {
   private final AuthClient auth;
   private final RateLimitService rateLimits;
   private final AuditLogService auditLogs;
+  private final CommunityNotificationService notifications;
 
-  ReportService(ReportRepository reports, PostService posts, CommentService comments, AuthClient auth, RateLimitService rateLimits, AuditLogService auditLogs) {
+  ReportService(ReportRepository reports, PostService posts, CommentService comments, AuthClient auth, RateLimitService rateLimits, AuditLogService auditLogs, CommunityNotificationService notifications) {
     this.reports = reports;
     this.posts = posts;
     this.comments = comments;
     this.auth = auth;
     this.rateLimits = rateLimits;
     this.auditLogs = auditLogs;
+    this.notifications = notifications;
   }
 
   @Transactional
@@ -78,6 +80,12 @@ public class ReportService {
     );
     reports.update(next);
     auditLogs.record(user, "REPORT_REVIEW", "REPORT", next.id(), next.status());
+    if (ReportTargetType.COMMENT.name().equals(next.targetType())) {
+      var comment = comments.requireComment(next.targetId());
+      notifications.notifyReportReviewed(user, next, comment.postId(), comment.id());
+    } else {
+      notifications.notifyReportReviewed(user, next, next.targetId(), "");
+    }
     return ReportView.fromRecord(next);
   }
 

@@ -32,6 +32,7 @@ class GatewayControllerRoutingTest {
   private static final TestServer resourceServer = TestServer.start("resource");
   private static final TestServer profileServer = TestServer.start("profile");
   private static final TestServer communityServer = TestServer.start("community");
+  private static final TestServer notificationServer = TestServer.start("notification");
 
   @Autowired
   MockMvc mvc;
@@ -42,6 +43,7 @@ class GatewayControllerRoutingTest {
     registry.add("beiming.services.resource-url", resourceServer::url);
     registry.add("beiming.services.profile-url", profileServer::url);
     registry.add("beiming.services.community-url", communityServer::url);
+    registry.add("beiming.services.notification-url", notificationServer::url);
     registry.add("beiming.frontend-origin", () -> "http://127.0.0.1:5173");
   }
 
@@ -51,6 +53,7 @@ class GatewayControllerRoutingTest {
     resourceServer.reset();
     profileServer.reset();
     communityServer.reset();
+    notificationServer.reset();
   }
 
   @AfterAll
@@ -59,6 +62,7 @@ class GatewayControllerRoutingTest {
     resourceServer.stop();
     profileServer.stop();
     communityServer.stop();
+    notificationServer.stop();
   }
 
   @Test
@@ -154,6 +158,46 @@ class GatewayControllerRoutingTest {
 
     org.assertj.core.api.Assertions.assertThat(authServer.calls()).isEqualTo(1);
     org.assertj.core.api.Assertions.assertThat(communityServer.calls()).isEqualTo(1);
+  }
+
+  @Test
+  void notificationRouteRequiresToken() throws Exception {
+    mvc.perform(get("/api/notifications"))
+      .andExpect(status().isUnauthorized());
+
+    org.assertj.core.api.Assertions.assertThat(authServer.calls()).isZero();
+    org.assertj.core.api.Assertions.assertThat(notificationServer.calls()).isZero();
+  }
+
+  @Test
+  void notificationRouteProxiesAfterAuthValidation() throws Exception {
+    var result = mvc.perform(get("/api/notifications")
+        .header("Authorization", "Bearer valid"))
+      .andExpect(request().asyncStarted())
+      .andReturn();
+
+    mvc.perform(asyncDispatch(result))
+      .andExpect(status().isOk())
+      .andExpect(content().string("notification:/api/notifications"));
+
+    org.assertj.core.api.Assertions.assertThat(authServer.calls()).isEqualTo(1);
+    org.assertj.core.api.Assertions.assertThat(notificationServer.calls()).isEqualTo(1);
+  }
+
+  @Test
+  void notificationRouteDoesNotGoToCommunityService() throws Exception {
+    var result = mvc.perform(get("/api/notifications/unread-count")
+        .header("Authorization", "Bearer valid"))
+      .andExpect(request().asyncStarted())
+      .andReturn();
+
+    mvc.perform(asyncDispatch(result))
+      .andExpect(status().isOk())
+      .andExpect(content().string("notification:/api/notifications/unread-count"));
+
+    org.assertj.core.api.Assertions.assertThat(authServer.calls()).isEqualTo(1);
+    org.assertj.core.api.Assertions.assertThat(notificationServer.calls()).isEqualTo(1);
+    org.assertj.core.api.Assertions.assertThat(communityServer.calls()).isZero();
   }
 
   static class TestServer {

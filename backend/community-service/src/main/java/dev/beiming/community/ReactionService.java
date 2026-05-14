@@ -13,8 +13,9 @@ public class ReactionService {
   private final CommentRepository commentRepository;
   private final AuthClient auth;
   private final RateLimitService rateLimits;
+  private final CommunityNotificationService notifications;
 
-  ReactionService(InteractionRepository interactions, PostService posts, PostRepository postRepository, CommentService comments, CommentRepository commentRepository, AuthClient auth, RateLimitService rateLimits) {
+  ReactionService(InteractionRepository interactions, PostService posts, PostRepository postRepository, CommentService comments, CommentRepository commentRepository, AuthClient auth, RateLimitService rateLimits, CommunityNotificationService notifications) {
     this.interactions = interactions;
     this.posts = posts;
     this.postRepository = postRepository;
@@ -22,6 +23,7 @@ public class ReactionService {
     this.commentRepository = commentRepository;
     this.auth = auth;
     this.rateLimits = rateLimits;
+    this.notifications = notifications;
   }
 
   @Transactional
@@ -32,6 +34,7 @@ public class ReactionService {
     if (!posts.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
     if (interactions.addPostLike(postId, user.id())) {
       postRepository.adjustLikeCount(postId, 1);
+      notifications.notifyPostLiked(user, post);
     }
   }
 
@@ -55,6 +58,7 @@ public class ReactionService {
     }
     if (interactions.addCommentLike(commentId, user.id())) {
       commentRepository.adjustLikeCount(commentId, 1);
+      notifications.notifyCommentLiked(user, post, comment);
     }
   }
 

@@ -112,6 +112,7 @@ export function getCommunityComments(postId, query = {}) {
   const params = new URLSearchParams();
   params.set('page', String(query.page || 1));
   params.set('pageSize', String(query.pageSize || 20));
+  if (query.commentId) params.set('commentId', query.commentId);
   return api(`/api/community/posts/${encodeURIComponent(postId)}/comments?${params.toString()}`);
 }
 
@@ -149,5 +150,36 @@ export function voteCommunityPoll(postId, optionIds) {
   return api(`/api/community/posts/${encodeURIComponent(postId)}/poll/votes`, {
     method: 'POST',
     body: { optionIds },
+  });
+}
+
+export function getNotifications(query = {}) {
+  const params = new URLSearchParams();
+  params.set('page', String(query.page || 1));
+  params.set('pageSize', String(query.pageSize || 20));
+  if (query.status) params.set('status', query.status);
+  if (query.type) params.set('type', query.type);
+  return api(`/api/notifications?${params.toString()}`);
+}
+
+export function getNotificationUnreadCount() {
+  return api('/api/notifications/unread-count');
+}
+
+export function markNotificationRead(notificationId) {
+  return api(`/api/notifications/${encodeURIComponent(notificationId)}/read`, {
+    method: 'PUT',
+  });
+}
+
+export function markAllNotificationsRead() {
+  return api('/api/notifications/read-all', {
+    method: 'PUT',
+  });
+}
+
+export function archiveNotification(notificationId) {
+  return api(`/api/notifications/${encodeURIComponent(notificationId)}`, {
+    method: 'DELETE',
   });
 }
