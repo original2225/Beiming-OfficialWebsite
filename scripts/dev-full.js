@@ -73,7 +73,7 @@ children.push(
       NOTIFICATION_SERVICE_URL: env.NOTIFICATION_SERVICE_URL || 'http://127.0.0.1:8795',
     },
   }),
-  spawn(npmCommand, ['--prefix', 'frontend', 'run', 'dev', '--', '--port', '5173'], { stdio: 'inherit', shell: isWindows, env }),
+  spawn(npmCommand, ['run', 'dev', '--', '--port', '5173'], { stdio: 'inherit', shell: isWindows, env }),
 );
 
 function readDotEnv(path) {

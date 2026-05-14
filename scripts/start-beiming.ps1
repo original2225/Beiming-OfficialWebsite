@@ -70,7 +70,7 @@ Start-BeimingProcess "Beiming Auth Service :$AuthPort" (Join-Path $root "backend
 Start-BeimingProcess "Beiming Resource Service :$ResourcePort" (Join-Path $root "backend/resource-service") "mvn spring-boot:run"
 Start-BeimingProcess "Beiming Profile Service :$ProfilePort" (Join-Path $root "backend/profile-service") "mvn spring-boot:run"
 Start-BeimingProcess "Beiming API Gateway :$ApiPort" (Join-Path $root "backend/api-gateway") "mvn spring-boot:run"
-Start-BeimingProcess "Beiming React Frontend :$FrontendPort" $root "npm --prefix frontend run dev -- --port $FrontendPort"
+Start-BeimingProcess "Beiming React Frontend :$FrontendPort" $root "npm run dev -- --port $FrontendPort"
 
 Write-Host "Beiming microservices are starting."
 Write-Host "Frontend:       http://127.0.0.1:$FrontendPort"
