@@ -1,0 +1,21 @@
+server:
+  address: ${COMMUNITY_SERVICE_HOST:127.0.0.1}
+  port: ${COMMUNITY_SERVICE_PORT:8794}
+
+spring:
+  application:
+    name: beiming-community-service
+  datasource:
+    url: ${COMMUNITY_DB_URL:jdbc:postgresql://192.168.1.5:5432/beiming?sslmode=disable}
+    username: ${COMMUNITY_DB_USERNAME:beiming}
+    password: ${COMMUNITY_DB_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+  flyway:
+    baseline-on-migrate: true
+    baseline-version: 0
+
+beiming:
+  frontend-origin: ${FRONTEND_ORIGIN:http://127.0.0.1:5173}
+  services:
+    auth-url: ${AUTH_SERVICE_URL:http://127.0.0.1:8792}
+    profile-url: ${PROFILE_SERVICE_URL:http://127.0.0.1:8793}

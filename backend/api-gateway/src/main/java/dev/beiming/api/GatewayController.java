@@ -38,16 +38,19 @@ public class GatewayController {
   private final String resourceUrl;
   private final String authUrl;
   private final String profileUrl;
+  private final String communityUrl;
   private final HttpClient httpClient = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
 
   GatewayController(
     @Value("${beiming.services.resource-url}") String resourceUrl,
     @Value("${beiming.services.auth-url}") String authUrl,
-    @Value("${beiming.services.profile-url}") String profileUrl
+    @Value("${beiming.services.profile-url}") String profileUrl,
+    @Value("${beiming.services.community-url}") String communityUrl
   ) {
     this.resourceUrl = resourceUrl.replaceFirst("/+$", "");
     this.authUrl = authUrl.replaceFirst("/+$", "");
     this.profileUrl = profileUrl.replaceFirst("/+$", "");
+    this.communityUrl = communityUrl.replaceFirst("/+$", "");
   }
 
   @GetMapping("/health")
@@ -56,7 +59,8 @@ public class GatewayController {
       "service", "beiming-api-gateway",
       "resourceService", resourceUrl,
       "authService", authUrl,
-      "profileService", profileUrl
+      "profileService", profileUrl,
+      "communityService", communityUrl
     ));
   }
 
@@ -64,7 +68,7 @@ public class GatewayController {
   ResponseEntity<StreamingResponseBody> proxyApi(HttpServletRequest servletRequest) throws Exception {
     var path = servletRequest.getRequestURI();
     var target = targetFor(path);
-    if (!isAuthServicePath(path) && !isPublicProfilePath(servletRequest.getMethod(), path)) {
+    if (!isAuthServicePath(path) && !isPublicProfilePath(servletRequest.getMethod(), path) && !isPublicCommunityPath(servletRequest.getMethod(), path)) {
       validateSession(servletRequest);
     }
     var upstream = forward(servletRequest, target);
@@ -74,6 +78,7 @@ public class GatewayController {
   private String targetFor(String path) {
     if (isAuthServicePath(path)) return authUrl;
     if (isProfileServicePath(path)) return profileUrl;
+    if (isCommunityServicePath(path)) return communityUrl;
     return resourceUrl;
   }
 
@@ -92,12 +97,28 @@ public class GatewayController {
     return path.startsWith("/api/profile/") || path.equals("/api/profile");
   }
 
+  private boolean isCommunityServicePath(String path) {
+    return path.startsWith("/api/community/") || path.equals("/api/community");
+  }
+
   private boolean isPublicProfilePath(String method, String path) {
     if (!"GET".equalsIgnoreCase(method)) return false;
     if (path.equals("/api/profile/members")) return true;
     if (!path.startsWith("/api/profile/members/")) return false;
     var tail = path.substring("/api/profile/members/".length());
     return !tail.isBlank() && !tail.contains("/");
+  }
+
+  private boolean isPublicCommunityPath(String method, String path) {
+    if (!"GET".equalsIgnoreCase(method)) return false;
+    if (path.equals("/api/community/boards")) return true;
+    if (path.equals("/api/community/posts")) return true;
+    if (path.startsWith("/api/community/posts/")) {
+      var tail = path.substring("/api/community/posts/".length());
+      if (!tail.contains("/")) return !tail.isBlank();
+      return tail.matches("[^/]+/comments");
+    }
+    return false;
   }
 
   private void validateSession(HttpServletRequest servletRequest) throws Exception {

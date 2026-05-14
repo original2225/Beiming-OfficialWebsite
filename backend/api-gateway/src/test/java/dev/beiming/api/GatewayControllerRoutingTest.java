@@ -19,8 +19,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
@@ -29,6 +31,7 @@ class GatewayControllerRoutingTest {
   private static final TestServer authServer = TestServer.start("auth");
   private static final TestServer resourceServer = TestServer.start("resource");
   private static final TestServer profileServer = TestServer.start("profile");
+  private static final TestServer communityServer = TestServer.start("community");
 
   @Autowired
   MockMvc mvc;
@@ -38,6 +41,7 @@ class GatewayControllerRoutingTest {
     registry.add("beiming.services.auth-url", authServer::url);
     registry.add("beiming.services.resource-url", resourceServer::url);
     registry.add("beiming.services.profile-url", profileServer::url);
+    registry.add("beiming.services.community-url", communityServer::url);
     registry.add("beiming.frontend-origin", () -> "http://127.0.0.1:5173");
   }
 
@@ -46,6 +50,7 @@ class GatewayControllerRoutingTest {
     authServer.reset();
     resourceServer.reset();
     profileServer.reset();
+    communityServer.reset();
   }
 
   @AfterAll
@@ -53,11 +58,16 @@ class GatewayControllerRoutingTest {
     authServer.stop();
     resourceServer.stop();
     profileServer.stop();
+    communityServer.stop();
   }
 
   @Test
   void publicProfileMembersRouteToProfileWithoutSessionValidation() throws Exception {
-    mvc.perform(get("/api/profile/members"))
+    var result = mvc.perform(get("/api/profile/members"))
+      .andExpect(request().asyncStarted())
+      .andReturn();
+
+    mvc.perform(asyncDispatch(result))
       .andExpect(status().isOk())
       .andExpect(content().string("profile:/api/profile/members"));
 
@@ -73,7 +83,11 @@ class GatewayControllerRoutingTest {
     org.assertj.core.api.Assertions.assertThat(authServer.calls()).isZero();
     org.assertj.core.api.Assertions.assertThat(profileServer.calls()).isZero();
 
-    mvc.perform(get("/api/profile/me").header("Authorization", "Bearer valid"))
+    var result = mvc.perform(get("/api/profile/me").header("Authorization", "Bearer valid"))
+      .andExpect(request().asyncStarted())
+      .andReturn();
+
+    mvc.perform(asyncDispatch(result))
       .andExpect(status().isOk())
       .andExpect(content().string("profile:/api/profile/me"));
 
@@ -88,6 +102,58 @@ class GatewayControllerRoutingTest {
         .header("Access-Control-Request-Method", "PATCH"))
       .andExpect(status().isOk())
       .andExpect(header().string("Access-Control-Allow-Methods", org.hamcrest.Matchers.containsString("PATCH")));
+  }
+
+  @Test
+  void publicCommunityListRoutesWithoutToken() throws Exception {
+    var result = mvc.perform(get("/api/community/posts"))
+      .andExpect(request().asyncStarted())
+      .andReturn();
+
+    mvc.perform(asyncDispatch(result))
+      .andExpect(status().isOk())
+      .andExpect(content().string("community:/api/community/posts"));
+
+    org.assertj.core.api.Assertions.assertThat(authServer.calls()).isZero();
+    org.assertj.core.api.Assertions.assertThat(communityServer.calls()).isEqualTo(1);
+  }
+
+  @Test
+  void publicCommunityDetailRoutesWithoutToken() throws Exception {
+    var result = mvc.perform(get("/api/community/posts/post-1/comments"))
+      .andExpect(request().asyncStarted())
+      .andReturn();
+
+    mvc.perform(asyncDispatch(result))
+      .andExpect(status().isOk())
+      .andExpect(content().string("community:/api/community/posts/post-1/comments"));
+
+    org.assertj.core.api.Assertions.assertThat(authServer.calls()).isZero();
+    org.assertj.core.api.Assertions.assertThat(communityServer.calls()).isEqualTo(1);
+  }
+
+  @Test
+  void communityWriteRouteRequiresToken() throws Exception {
+    mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/community/posts"))
+      .andExpect(status().isUnauthorized());
+
+    org.assertj.core.api.Assertions.assertThat(authServer.calls()).isZero();
+    org.assertj.core.api.Assertions.assertThat(communityServer.calls()).isZero();
+  }
+
+  @Test
+  void communityWriteRouteProxiesAfterAuthValidation() throws Exception {
+    var result = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/community/posts")
+        .header("Authorization", "Bearer valid"))
+      .andExpect(request().asyncStarted())
+      .andReturn();
+
+    mvc.perform(asyncDispatch(result))
+      .andExpect(status().isOk())
+      .andExpect(content().string("community:/api/community/posts"));
+
+    org.assertj.core.api.Assertions.assertThat(authServer.calls()).isEqualTo(1);
+    org.assertj.core.api.Assertions.assertThat(communityServer.calls()).isEqualTo(1);
   }
 
   static class TestServer {
