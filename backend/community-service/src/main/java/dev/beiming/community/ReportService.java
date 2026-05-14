@@ -13,13 +13,15 @@ public class ReportService {
   private final CommentService comments;
   private final AuthClient auth;
   private final RateLimitService rateLimits;
+  private final AuditLogService auditLogs;
 
-  ReportService(ReportRepository reports, PostService posts, CommentService comments, AuthClient auth, RateLimitService rateLimits) {
+  ReportService(ReportRepository reports, PostService posts, CommentService comments, AuthClient auth, RateLimitService rateLimits, AuditLogService auditLogs) {
     this.reports = reports;
     this.posts = posts;
     this.comments = comments;
     this.auth = auth;
     this.rateLimits = rateLimits;
+    this.auditLogs = auditLogs;
   }
 
   @Transactional
@@ -75,6 +77,7 @@ public class ReportService {
       CommunityRules.now()
     );
     reports.update(next);
+    auditLogs.record(user, "REPORT_REVIEW", "REPORT", next.id(), next.status());
     return ReportView.fromRecord(next);
   }
 
@@ -99,7 +102,9 @@ public class ReportService {
       now,
       0L
     );
-    reports.insert(record);
+    if (!reports.insert(record)) {
+      throw new ApiException(HttpStatus.CONFLICT, "相同原因的举报已经提交");
+    }
     return ReportView.fromRecord(record);
   }
 }

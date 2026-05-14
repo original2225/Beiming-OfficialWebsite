@@ -6,23 +6,40 @@ import {
   Eye,
   LogIn,
   LogOut,
+  Flag,
+  Heart,
+  MessageSquare,
   RefreshCw,
   Save,
   Shield,
+  Star,
+  Send,
   User,
   Users,
 } from 'lucide-react';
 import {
   clearToken,
+  createCommunityComment,
+  createCommunityPost,
+  favoriteCommunityPost,
+  getCommunityBoards,
+  getCommunityComments,
+  getCommunityPost,
+  getCommunityPosts,
   getAdminMembers,
   getMe,
   getProfileMe,
   getPublicMember,
   getPublicMembers,
+  likeCommunityPost,
   login,
   readSession,
+  reportCommunityPost,
+  unfavoriteCommunityPost,
+  unlikeCommunityPost,
   updateAdminMember,
   updateProfileMe,
+  voteCommunityPoll,
 } from './api.js';
 import './styles.css';
 
@@ -33,6 +50,15 @@ const emptyProfileForm = {
   minecraftId: '',
   minecraftUuid: '',
   visibility: 'PUBLIC',
+};
+
+const emptyPostForm = {
+  boardId: '',
+  title: '',
+  content: '',
+  visibility: 'PUBLIC',
+  pollQuestion: '',
+  pollOptions: '',
 };
 
 function App() {
@@ -50,11 +76,19 @@ function App() {
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [boards, setBoards] = useState([]);
+  const [postQuery, setPostQuery] = useState({ boardId: '', q: '', sort: 'latest' });
+  const [posts, setPosts] = useState({ items: [], page: 1, pageSize: 12, total: 0 });
+  const [selectedPost, setSelectedPost] = useState(null);
+  const [comments, setComments] = useState({ items: [], page: 1, pageSize: 10, total: 0 });
+  const [postForm, setPostForm] = useState(emptyPostForm);
+  const [commentText, setCommentText] = useState('');
 
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
 
   useEffect(() => {
     loadPublicMembers();
+    loadCommunity();
   }, []);
 
   useEffect(() => {
@@ -83,6 +117,98 @@ function App() {
       if (!selectedMember && data.items.length > 0) setSelectedMember(data.items[0]);
       return data;
     });
+  }
+
+  async function loadCommunity(query = postQuery) {
+    return run('community', async () => {
+      const [nextBoards, nextPosts] = await Promise.all([
+        getCommunityBoards(),
+        getCommunityPosts({ ...query, pageSize: 12 }),
+      ]);
+      setBoards(nextBoards);
+      setPosts(nextPosts);
+      setPostForm((current) => ({ ...current, boardId: current.boardId || nextBoards[0]?.id || '' }));
+      if (!selectedPost && nextPosts.items.length > 0) {
+        await openPost(nextPosts.items[0].id);
+      }
+      return nextPosts;
+    });
+  }
+
+  async function openPost(postId) {
+    return run(`post-${postId}`, async () => {
+      const [detail, nextComments] = await Promise.all([
+        getCommunityPost(postId),
+        getCommunityComments(postId, { pageSize: 10 }),
+      ]);
+      setSelectedPost(detail);
+      setComments(nextComments);
+      return detail;
+    });
+  }
+
+  async function submitPost(event) {
+    event.preventDefault();
+    const pollOptions = postForm.pollOptions
+      .split('\n')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const body = {
+      boardId: postForm.boardId,
+      title: postForm.title,
+      content: postForm.content,
+      status: 'PUBLISHED',
+      visibility: postForm.visibility,
+    };
+    if (postForm.pollQuestion.trim() && pollOptions.length >= 2) {
+      body.poll = {
+        question: postForm.pollQuestion,
+        voteMode: 'SINGLE',
+        resultVisibility: 'AFTER_VOTE',
+        options: pollOptions.map((text) => ({ text })),
+      };
+    }
+    const data = await run('create-post', () => createCommunityPost(body));
+    if (!data) return;
+    setPostForm({ ...emptyPostForm, boardId: postForm.boardId });
+    setNotice('帖子已发布');
+    await loadCommunity(postQuery);
+    await openPost(data.id);
+  }
+
+  async function submitComment(event) {
+    event.preventDefault();
+    if (!selectedPost || !commentText.trim()) return;
+    const data = await run('create-comment', () => createCommunityComment(selectedPost.id, commentText));
+    if (!data) return;
+    setCommentText('');
+    setNotice('评论已发布');
+    const nextComments = await getCommunityComments(selectedPost.id, { pageSize: 10 });
+    setComments(nextComments);
+  }
+
+  async function togglePostLike() {
+    if (!selectedPost) return;
+    await run('like-post', () => selectedPost.liked ? unlikeCommunityPost(selectedPost.id) : likeCommunityPost(selectedPost.id));
+    await openPost(selectedPost.id);
+  }
+
+  async function togglePostFavorite() {
+    if (!selectedPost) return;
+    await run('favorite-post', () => selectedPost.favorited ? unfavoriteCommunityPost(selectedPost.id) : favoriteCommunityPost(selectedPost.id));
+    await openPost(selectedPost.id);
+  }
+
+  async function reportPost() {
+    if (!selectedPost) return;
+    const data = await run('report-post', () => reportCommunityPost(selectedPost.id, { reason: 'SPAM', detail: '前端人工测试举报' }));
+    if (data) setNotice('举报已提交');
+  }
+
+  async function votePoll(optionId) {
+    if (!selectedPost) return;
+    await run('vote-poll', () => voteCommunityPoll(selectedPost.id, [optionId]));
+    await openPost(selectedPost.id);
   }
 
   async function loadPrivateState() {
@@ -272,6 +398,165 @@ function App() {
             </form>
           ) : (
             <p className="hint">登录后可以创建或更新自己的公开档案。</p>
+          )}
+        </Panel>
+      </section>
+
+      <section className="community-layout">
+        <Panel icon={<MessageSquare size={18} />} title="社区论坛">
+          <form className="search" onSubmit={(event) => { event.preventDefault(); loadCommunity(postQuery); }}>
+            <select value={postQuery.boardId} onChange={(event) => setPostQuery({ ...postQuery, boardId: event.target.value })}>
+              <option value="">全部分区</option>
+              {boards.map((board) => (
+                <option key={board.id} value={board.id}>{board.name}</option>
+              ))}
+            </select>
+            <input onChange={(event) => setPostQuery({ ...postQuery, q: event.target.value })} placeholder="搜索帖子标题、内容或作者" value={postQuery.q} />
+            <button type="submit">
+              <RefreshCw size={16} />
+              查询
+            </button>
+          </form>
+          <div className="board-strip">
+            {boards.map((board) => (
+              <button
+                className={postQuery.boardId === board.id ? 'chip active' : 'chip'}
+                key={board.id}
+                onClick={() => {
+                  const next = { ...postQuery, boardId: board.id };
+                  setPostQuery(next);
+                  loadCommunity(next);
+                }}
+                type="button"
+              >
+                {board.name}
+              </button>
+            ))}
+          </div>
+          <div className="post-list">
+            {posts.items.length === 0 && <p className="hint">暂无帖子。</p>}
+            {posts.items.map((item) => (
+              <button className="post-row" key={item.id} onClick={() => openPost(item.id)} type="button">
+                <span>
+                  <strong>{item.title}</strong>
+                  <small>{item.authorDisplayName} · 评论 {item.commentCount} · 赞 {item.likeCount}</small>
+                </span>
+                <small>{formatTime(item.publishedAt)}</small>
+              </button>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel icon={<Send size={18} />} title="发帖测试台">
+          {token ? (
+            <form className="form" onSubmit={submitPost}>
+              <label>
+                分区
+                <select value={postForm.boardId} onChange={(event) => setPostForm({ ...postForm, boardId: event.target.value })}>
+                  {boards.map((board) => (
+                    <option key={board.id} value={board.id}>{board.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                可见性
+                <select value={postForm.visibility} onChange={(event) => setPostForm({ ...postForm, visibility: event.target.value })}>
+                  <option value="PUBLIC">PUBLIC</option>
+                  <option value="MEMBER_ONLY">MEMBER_ONLY</option>
+                  <option value="ADMIN_ONLY">ADMIN_ONLY</option>
+                </select>
+              </label>
+              <label className="wide">
+                标题
+                <input value={postForm.title} onChange={(event) => setPostForm({ ...postForm, title: event.target.value })} />
+              </label>
+              <label className="wide">
+                内容
+                <textarea value={postForm.content} onChange={(event) => setPostForm({ ...postForm, content: event.target.value })} />
+              </label>
+              <label className="wide">
+                投票问题，可选
+                <input value={postForm.pollQuestion} onChange={(event) => setPostForm({ ...postForm, pollQuestion: event.target.value })} />
+              </label>
+              <label className="wide">
+                投票选项，每行一个
+                <textarea value={postForm.pollOptions} onChange={(event) => setPostForm({ ...postForm, pollOptions: event.target.value })} />
+              </label>
+              <button disabled={busy === 'create-post'} type="submit">
+                <Send size={16} />
+                发布帖子
+              </button>
+            </form>
+          ) : (
+            <p className="hint">登录后可以在这里发帖、评论、点赞、收藏、举报和投票。</p>
+          )}
+        </Panel>
+
+        <Panel icon={<Eye size={18} />} title="帖子详情">
+          {selectedPost ? (
+            <article className="post-detail">
+              <p className="eyebrow">{selectedPost.authorDisplayName} · {selectedPost.visibility} · {formatTime(selectedPost.publishedAt)}</p>
+              <h2>{selectedPost.title}</h2>
+              <p>{selectedPost.content}</p>
+              <div className="action-row">
+                <button onClick={togglePostLike} type="button">
+                  <Heart size={16} />
+                  {selectedPost.liked ? '取消赞' : '点赞'} {selectedPost.likeCount}
+                </button>
+                <button onClick={togglePostFavorite} type="button">
+                  <Star size={16} />
+                  {selectedPost.favorited ? '取消收藏' : '收藏'} {selectedPost.favoriteCount}
+                </button>
+                <button onClick={reportPost} type="button">
+                  <Flag size={16} />
+                  举报
+                </button>
+              </div>
+              {selectedPost.poll && (
+                <div className="poll-box">
+                  <strong>{selectedPost.poll.question}</strong>
+                  {selectedPost.poll.options.map((option) => (
+                    <button className="poll-option" key={option.id} onClick={() => votePoll(option.id)} type="button">
+                      <span>{option.optionText}</span>
+                      <small>{selectedPost.poll.resultsVisible ? `${option.voteCount} 票` : '投票后可见'}</small>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </article>
+          ) : (
+            <p className="hint">选择一个帖子查看详情。</p>
+          )}
+        </Panel>
+
+        <Panel icon={<MessageSquare size={18} />} title="评论分页">
+          {selectedPost ? (
+            <>
+              <div className="comment-list">
+                {comments.items.map((item) => (
+                  <article className="comment-row" key={item.id}>
+                    <strong>{item.authorDisplayName}</strong>
+                    <p>{item.content}</p>
+                    <small>{formatTime(item.createdAt)} · 赞 {item.likeCount}</small>
+                  </article>
+                ))}
+                {comments.items.length === 0 && <p className="hint">还没有评论。</p>}
+              </div>
+              <p className="hint">第 {comments.page} 页，共 {comments.total} 条</p>
+              {token ? (
+                <form className="comment-form" onSubmit={submitComment}>
+                  <textarea value={commentText} onChange={(event) => setCommentText(event.target.value)} placeholder="写一条评论做功能测试" />
+                  <button disabled={busy === 'create-comment'} type="submit">
+                    <Send size={16} />
+                    评论
+                  </button>
+                </form>
+              ) : (
+                <p className="hint">登录后可以发表评论。</p>
+              )}
+            </>
+          ) : (
+            <p className="hint">先选择帖子。</p>
           )}
         </Panel>
       </section>

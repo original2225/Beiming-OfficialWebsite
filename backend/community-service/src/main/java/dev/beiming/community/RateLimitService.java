@@ -6,8 +6,11 @@ import org.springframework.stereotype.Service;
 @Service
 public class RateLimitService {
   private static final long MINUTE = 60_000L;
+  private static final long CLEANUP_INTERVAL = 10 * MINUTE;
+  private static final long RETENTION = 2 * 24 * 60 * MINUTE;
 
   private final RateLimitRepository limits;
+  private long nextCleanupAt = 0L;
 
   RateLimitService(RateLimitRepository limits) {
     this.limits = limits;
@@ -41,10 +44,17 @@ public class RateLimitService {
     if (user != null && user.isAdmin()) return;
     var userId = user == null ? "anonymous" : user.id();
     var now = CommunityRules.now();
+    cleanupIfNeeded(now);
     var bucketStart = now - (now % windowMillis);
     var scope = action + ":" + userId;
     if (!limits.tryAcquire(scope, bucketStart, maxRequests)) {
       throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "操作过于频繁，请稍后再试");
     }
+  }
+
+  private synchronized void cleanupIfNeeded(long now) {
+    if (now < nextCleanupAt) return;
+    nextCleanupAt = now + CLEANUP_INTERVAL;
+    limits.deleteOlderThan(now - RETENTION);
   }
 }

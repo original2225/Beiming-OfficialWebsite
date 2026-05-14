@@ -10,10 +10,12 @@ import java.util.UUID;
 public class BoardService {
   private final BoardRepository boards;
   private final AuthClient auth;
+  private final AuditLogService auditLogs;
 
-  BoardService(BoardRepository boards, AuthClient auth) {
+  BoardService(BoardRepository boards, AuthClient auth, AuditLogService auditLogs) {
     this.boards = boards;
     this.auth = auth;
+    this.auditLogs = auditLogs;
   }
 
   List<BoardView> publicBoards(String authorization) {
@@ -42,6 +44,7 @@ public class BoardService {
       now
     );
     boards.insert(record);
+    auditLogs.record(actor, "BOARD_CREATE", "BOARD", record.id(), record.slug());
     return BoardView.fromRecord(record);
   }
 
@@ -61,6 +64,7 @@ public class BoardService {
       CommunityRules.now()
     );
     boards.update(next);
+    auditLogs.record(actor, "BOARD_UPDATE", "BOARD", next.id(), next.slug());
     return BoardView.fromRecord(next);
   }
 }

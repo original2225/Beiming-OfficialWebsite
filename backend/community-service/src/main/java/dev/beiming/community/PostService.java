@@ -16,8 +16,9 @@ public class PostService {
   private final ProfileClient profiles;
   private final PollService polls;
   private final RateLimitService rateLimits;
+  private final AuditLogService auditLogs;
 
-  PostService(PostRepository posts, BoardRepository boards, InteractionRepository interactions, AuthClient auth, ProfileClient profiles, PollService polls, RateLimitService rateLimits) {
+  PostService(PostRepository posts, BoardRepository boards, InteractionRepository interactions, AuthClient auth, ProfileClient profiles, PollService polls, RateLimitService rateLimits, AuditLogService auditLogs) {
     this.posts = posts;
     this.boards = boards;
     this.interactions = interactions;
@@ -25,6 +26,7 @@ public class PostService {
     this.profiles = profiles;
     this.polls = polls;
     this.rateLimits = rateLimits;
+    this.auditLogs = auditLogs;
   }
 
   PageResult<PostSummaryView> publicPosts(String authorization, String boardId, int page, int pageSize, String q, String sort) {
@@ -140,6 +142,7 @@ public class PostService {
       current.moderationNote()
     );
     posts.update(next);
+    auditLogs.record(user, "POST_MODERATE", "POST", next.id(), next.status() + "/" + next.reviewStatus());
     return toDetail(next, user, authorization);
   }
 

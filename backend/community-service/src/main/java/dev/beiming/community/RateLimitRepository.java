@@ -38,4 +38,8 @@ public class RateLimitRepository {
       ) > 0;
     }
   }
+
+  void deleteOlderThan(long updatedBefore) {
+    jdbc.update("delete from beiming_community_rate_limits where updated_at < ?", updatedBefore);
+  }
 }

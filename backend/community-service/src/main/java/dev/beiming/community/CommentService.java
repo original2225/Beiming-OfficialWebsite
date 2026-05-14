@@ -16,8 +16,9 @@ public class CommentService {
   private final AuthClient auth;
   private final ProfileClient profiles;
   private final RateLimitService rateLimits;
+  private final AuditLogService auditLogs;
 
-  CommentService(CommentRepository comments, PostService posts, PostRepository postRepository, InteractionRepository interactions, AuthClient auth, ProfileClient profiles, RateLimitService rateLimits) {
+  CommentService(CommentRepository comments, PostService posts, PostRepository postRepository, InteractionRepository interactions, AuthClient auth, ProfileClient profiles, RateLimitService rateLimits, AuditLogService auditLogs) {
     this.comments = comments;
     this.posts = posts;
     this.postRepository = postRepository;
@@ -25,6 +26,7 @@ public class CommentService {
     this.auth = auth;
     this.profiles = profiles;
     this.rateLimits = rateLimits;
+    this.auditLogs = auditLogs;
   }
 
   PageResult<CommentView> list(String authorization, String postId, int page, int pageSize) {
@@ -147,6 +149,7 @@ public class CommentService {
     if (CommentStatus.parse(current.status()) != CommentStatus.VISIBLE && CommentStatus.parse(nextStatus) == CommentStatus.VISIBLE) {
       postRepository.adjustCommentCount(current.postId(), 1);
     }
+    auditLogs.record(user, "COMMENT_MODERATE", "COMMENT", commentId, nextStatus);
     var next = comments.findById(commentId).orElseThrow();
     return CommentView.fromRecord(next, false);
   }

@@ -110,11 +110,16 @@ button:disabled {
 }
 
 .grid,
-.members-layout {
+.members-layout,
+.community-layout {
   display: grid;
   gap: 16px;
   grid-template-columns: minmax(280px, 0.8fr) minmax(320px, 1.2fr);
   margin-bottom: 16px;
+}
+
+.community-layout {
+  grid-template-columns: minmax(320px, 1fr) minmax(360px, 1fr);
 }
 
 .admin-section {
@@ -161,7 +166,9 @@ button:disabled {
 .form input,
 .form select,
 .form textarea,
-.search input {
+.search input,
+.search select,
+.comment-form textarea {
   background: #f8faf9;
   border: 1px solid #ccd8d5;
   border-radius: 6px;
@@ -207,7 +214,9 @@ button:disabled {
 }
 
 .member-list,
-.admin-list {
+.admin-list,
+.post-list,
+.comment-list {
   display: grid;
   gap: 8px;
   max-height: 380px;
@@ -215,7 +224,8 @@ button:disabled {
 }
 
 .member-row,
-.admin-row {
+.admin-row,
+.post-row {
   background: #f8faf9;
   border: 1px solid #dbe4e1;
   color: #1c2a2f;
@@ -227,14 +237,89 @@ button:disabled {
 }
 
 .member-row span,
-.admin-row span {
+.admin-row span,
+.post-row span {
   display: grid;
   gap: 2px;
 }
 
 .member-row small,
-.admin-row small {
+.admin-row small,
+.post-row small,
+.comment-row small,
+.poll-option small {
   color: #6b7b80;
+}
+
+.board-strip,
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.chip {
+  background: #eaf1ee;
+  color: #26464d;
+  min-height: 32px;
+}
+
+.chip.active {
+  background: #174c5c;
+  color: #fff;
+}
+
+.post-detail h2 {
+  font-size: 26px;
+  margin: 0 0 10px;
+}
+
+.post-detail p {
+  color: #3c4f55;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.poll-box {
+  background: #f4f7f5;
+  border: 1px solid #d9e4e0;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.poll-option {
+  background: #fff;
+  border: 1px solid #d9e4e0;
+  color: #17272c;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.comment-row {
+  background: #f8faf9;
+  border: 1px solid #dbe4e1;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.comment-row p {
+  color: #3c4f55;
+  margin: 6px 0;
+}
+
+.comment-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.comment-form textarea {
+  min-height: 88px;
+  resize: vertical;
 }
 
 .avatar {
@@ -303,6 +388,7 @@ dd {
 
   .topbar,
   .grid,
+  .community-layout,
   .members-layout,
   .profile-detail {
     grid-template-columns: 1fr;

@@ -15,12 +15,14 @@ public class CommunityAdminController {
   private final PostService posts;
   private final CommentService comments;
   private final ReportService reports;
+  private final AuditLogService auditLogs;
 
-  CommunityAdminController(BoardService boards, PostService posts, CommentService comments, ReportService reports) {
+  CommunityAdminController(BoardService boards, PostService posts, CommentService comments, ReportService reports, AuditLogService auditLogs) {
     this.boards = boards;
     this.posts = posts;
     this.comments = comments;
     this.reports = reports;
+    this.auditLogs = auditLogs;
   }
 
   @PostMapping("/api/community/admin/boards")
@@ -88,5 +90,14 @@ public class CommunityAdminController {
     @RequestBody ReviewReportRequest body
   ) {
     return ApiEnvelope.ok(reports.review(authorization, reportId, body));
+  }
+
+  @GetMapping("/api/community/admin/audit-logs")
+  ApiEnvelope<PageResult<AuditLogView>> auditLogs(
+    @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
+    @RequestParam(defaultValue = "1") int page,
+    @RequestParam(defaultValue = "20") int pageSize
+  ) {
+    return ApiEnvelope.ok(auditLogs.list(authorization, page, pageSize));
   }
 }

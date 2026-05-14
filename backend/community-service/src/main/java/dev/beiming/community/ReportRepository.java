@@ -2,6 +2,7 @@ package dev.beiming.community;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Repository;
 
 import java.util.ArrayList;
@@ -47,27 +48,31 @@ public class ReportRepository {
     return count != null && count > 0;
   }
 
-  void insert(ReportRecord record) {
-    jdbc.update(
-      """
-        insert into beiming_community_reports
-        (id, target_type, target_id, reporter_user_id, reporter_display_name, reason, detail, status, reviewer_user_id, review_note, created_at, updated_at, resolved_at)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      """,
-      record.id(),
-      record.targetType(),
-      record.targetId(),
-      record.reporterUserId(),
-      record.reporterDisplayName(),
-      record.reason(),
-      record.detail(),
-      record.status(),
-      record.reviewerUserId(),
-      record.reviewNote(),
-      record.createdAt(),
-      record.updatedAt(),
-      record.resolvedAt()
-    );
+  boolean insert(ReportRecord record) {
+    try {
+      return jdbc.update(
+        """
+          insert into beiming_community_reports
+          (id, target_type, target_id, reporter_user_id, reporter_display_name, reason, detail, status, reviewer_user_id, review_note, created_at, updated_at, resolved_at)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        record.id(),
+        record.targetType(),
+        record.targetId(),
+        record.reporterUserId(),
+        record.reporterDisplayName(),
+        record.reason(),
+        record.detail(),
+        record.status(),
+        record.reviewerUserId(),
+        record.reviewNote(),
+        record.createdAt(),
+        record.updatedAt(),
+        record.resolvedAt()
+      ) > 0;
+    } catch (DuplicateKeyException ignored) {
+      return false;
+    }
   }
 
   Optional<ReportRecord> findById(String reportId) {

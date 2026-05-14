@@ -60,6 +60,7 @@ class CommunityControllerIntegrationTest {
 
   @BeforeEach
   void resetDatabase() {
+    jdbc.execute("delete from beiming_community_audit_logs");
     jdbc.execute("delete from beiming_community_rate_limits");
     jdbc.execute("delete from beiming_community_poll_votes");
     jdbc.execute("delete from beiming_community_poll_options");
@@ -517,6 +518,10 @@ class CommunityControllerIntegrationTest {
         .content(json(Map.of("status", "RESOLVED", "reviewNote", "已处理"))))
       .andExpect(status().isOk())
       .andExpect(jsonPath("$.data.status").value("RESOLVED"));
+
+    mvc.perform(get("/api/community/admin/audit-logs").header("Authorization", bearer("admin-token")))
+      .andExpect(status().isOk())
+      .andExpect(jsonPath("$.data.items[0].action").value("REPORT_REVIEW"));
   }
 
   @Test

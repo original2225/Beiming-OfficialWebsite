@@ -82,3 +82,72 @@ export function updateAdminMember(profileId, body) {
     body,
   });
 }
+
+export function getCommunityBoards() {
+  return api('/api/community/boards');
+}
+
+export function getCommunityPosts(query = {}) {
+  const params = new URLSearchParams();
+  params.set('page', String(query.page || 1));
+  params.set('pageSize', String(query.pageSize || 20));
+  if (query.boardId) params.set('boardId', query.boardId);
+  if (query.q) params.set('q', query.q);
+  if (query.sort) params.set('sort', query.sort);
+  return api(`/api/community/posts?${params.toString()}`);
+}
+
+export function getCommunityPost(postId) {
+  return api(`/api/community/posts/${encodeURIComponent(postId)}`);
+}
+
+export function createCommunityPost(body) {
+  return api('/api/community/posts', {
+    method: 'POST',
+    body,
+  });
+}
+
+export function getCommunityComments(postId, query = {}) {
+  const params = new URLSearchParams();
+  params.set('page', String(query.page || 1));
+  params.set('pageSize', String(query.pageSize || 20));
+  return api(`/api/community/posts/${encodeURIComponent(postId)}/comments?${params.toString()}`);
+}
+
+export function createCommunityComment(postId, content) {
+  return api(`/api/community/posts/${encodeURIComponent(postId)}/comments`, {
+    method: 'POST',
+    body: { content },
+  });
+}
+
+export function likeCommunityPost(postId) {
+  return api(`/api/community/posts/${encodeURIComponent(postId)}/reactions`, { method: 'POST' });
+}
+
+export function unlikeCommunityPost(postId) {
+  return api(`/api/community/posts/${encodeURIComponent(postId)}/reactions`, { method: 'DELETE' });
+}
+
+export function favoriteCommunityPost(postId) {
+  return api(`/api/community/posts/${encodeURIComponent(postId)}/favorites`, { method: 'POST' });
+}
+
+export function unfavoriteCommunityPost(postId) {
+  return api(`/api/community/posts/${encodeURIComponent(postId)}/favorites`, { method: 'DELETE' });
+}
+
+export function reportCommunityPost(postId, body) {
+  return api(`/api/community/posts/${encodeURIComponent(postId)}/reports`, {
+    method: 'POST',
+    body,
+  });
+}
+
+export function voteCommunityPoll(postId, optionIds) {
+  return api(`/api/community/posts/${encodeURIComponent(postId)}/poll/votes`, {
+    method: 'POST',
+    body: { optionIds },
+  });
+}
