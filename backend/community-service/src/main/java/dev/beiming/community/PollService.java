@@ -2,6 +2,7 @@ package dev.beiming.community;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -11,15 +12,18 @@ import java.util.UUID;
 public class PollService {
   private final PollRepository polls;
   private final PostRepository posts;
+  private final BoardRepository boards;
   private final AuthClient auth;
 
-  PollService(PollRepository polls, PostRepository posts, AuthClient auth) {
+  PollService(PollRepository polls, PostRepository posts, BoardRepository boards, AuthClient auth) {
     this.polls = polls;
     this.posts = posts;
+    this.boards = boards;
     this.auth = auth;
   }
 
-  synchronized void createForPost(String postId, CreatePollRequest request) {
+  @Transactional
+  public synchronized void createForPost(String postId, CreatePollRequest request) {
     CommunityRules.validatePollRequest(request);
     if (request == null) return;
     var now = CommunityRules.now();
@@ -56,10 +60,11 @@ public class PollService {
     return toView(poll, viewer);
   }
 
-  synchronized PollView vote(String authorization, String postId, CastPollVoteRequest request) {
+  @Transactional
+  public synchronized PollView vote(String authorization, String postId, CastPollVoteRequest request) {
     var user = auth.requireUser(authorization);
     var post = posts.findById(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "帖子不存在"));
-    if (!CommunityRules.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
+    if (!canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
     if (post.locked() && !user.isAdmin()) throw new ApiException(HttpStatus.FORBIDDEN, "帖子已锁定");
     var poll = polls.findByPostId(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "投票不存在"));
     ensureOpen(poll);
@@ -74,12 +79,19 @@ public class PollService {
     return toView(poll, user);
   }
 
-  synchronized PollView retract(String authorization, String postId) {
+  @Transactional
+  public synchronized PollView retract(String authorization, String postId) {
     var user = auth.requireUser(authorization);
     var poll = polls.findByPostId(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "投票不存在"));
     ensureOpen(poll);
     polls.removeVotes(poll.id(), user.id());
     return toView(poll, user);
+  }
+
+  private boolean canViewPost(CurrentUserView viewer, PostRecord post) {
+    if (!CommunityRules.canViewPost(viewer, post)) return false;
+    var board = boards.findById(post.boardId()).orElse(null);
+    return board != null && CommunityRules.canViewBoard(viewer, board.visibility());
   }
 
   private void ensureOpen(PollRecord poll) {

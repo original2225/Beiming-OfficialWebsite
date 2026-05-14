@@ -2,6 +2,7 @@ package dev.beiming.community;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class ReactionService {
@@ -21,27 +22,30 @@ public class ReactionService {
     this.auth = auth;
   }
 
-  synchronized void likePost(String authorization, String postId) {
+  @Transactional
+  public synchronized void likePost(String authorization, String postId) {
     var user = auth.requireUser(authorization);
     var post = posts.requirePost(postId);
-    if (!CommunityRules.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
+    if (!posts.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
     if (interactions.hasPostLike(postId, user.id())) return;
     interactions.addPostLike(postId, user.id());
     postRepository.adjustLikeCount(postId, 1);
   }
 
-  synchronized void unlikePost(String authorization, String postId) {
+  @Transactional
+  public synchronized void unlikePost(String authorization, String postId) {
     var user = auth.requireUser(authorization);
     if (!interactions.hasPostLike(postId, user.id())) return;
     interactions.removePostLike(postId, user.id());
     postRepository.adjustLikeCount(postId, -1);
   }
 
-  synchronized void likeComment(String authorization, String commentId) {
+  @Transactional
+  public synchronized void likeComment(String authorization, String commentId) {
     var user = auth.requireUser(authorization);
     var comment = comments.requireComment(commentId);
     var post = posts.requirePost(comment.postId());
-    if (!CommunityRules.canViewPost(user, post) || CommentStatus.parse(comment.status()) != CommentStatus.VISIBLE) {
+    if (!posts.canViewPost(user, post) || CommentStatus.parse(comment.status()) != CommentStatus.VISIBLE) {
       throw new ApiException(HttpStatus.NOT_FOUND, "评论不存在");
     }
     if (interactions.hasCommentLike(commentId, user.id())) return;
@@ -49,7 +53,8 @@ public class ReactionService {
     commentRepository.adjustLikeCount(commentId, 1);
   }
 
-  synchronized void unlikeComment(String authorization, String commentId) {
+  @Transactional
+  public synchronized void unlikeComment(String authorization, String commentId) {
     var user = auth.requireUser(authorization);
     if (!interactions.hasCommentLike(commentId, user.id())) return;
     interactions.removeCommentLike(commentId, user.id());

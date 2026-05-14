@@ -2,6 +2,7 @@ package dev.beiming.community;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.UUID;
@@ -27,17 +28,18 @@ public class CommentService {
   List<CommentView> list(String authorization, String postId) {
     var viewer = auth.optionalUser(authorization);
     var post = posts.requirePost(postId);
-    if (!CommunityRules.canViewPost(viewer, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
+    if (!posts.canViewPost(viewer, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
     return comments.byPostId(postId).stream()
       .filter(comment -> CommunityRules.canViewComment(viewer, comment))
       .map(comment -> CommentView.fromRecord(comment, viewer != null && interactions.hasCommentLike(comment.id(), viewer.id())))
       .toList();
   }
 
-  synchronized CommentView create(String authorization, String postId, CreateCommentRequest request) {
+  @Transactional
+  public synchronized CommentView create(String authorization, String postId, CreateCommentRequest request) {
     var user = auth.requireUser(authorization);
     var post = posts.requirePost(postId);
-    if (!CommunityRules.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
+    if (!posts.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
     if (post.locked() && !user.isAdmin()) throw new ApiException(HttpStatus.FORBIDDEN, "帖子已锁定");
     var parentId = CommunityRules.clean(request.parentCommentId());
     if (!parentId.isBlank()) {
@@ -69,7 +71,8 @@ public class CommentService {
     return CommentView.fromRecord(comment, false);
   }
 
-  synchronized CommentView update(String authorization, String commentId, UpdateCommentRequest request) {
+  @Transactional
+  public synchronized CommentView update(String authorization, String commentId, UpdateCommentRequest request) {
     var user = auth.requireUser(authorization);
     var current = comments.findById(commentId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "评论不存在"));
     CommunityRules.requireAuthorOrAdmin(user, current.authorUserId(), "没有权限编辑该评论");
@@ -100,7 +103,8 @@ public class CommentService {
     return CommentView.fromRecord(next, user != null && interactions.hasCommentLike(next.id(), user.id()));
   }
 
-  synchronized void softDelete(String authorization, String commentId) {
+  @Transactional
+  public synchronized void softDelete(String authorization, String commentId) {
     var user = auth.requireUser(authorization);
     var current = comments.findById(commentId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "评论不存在"));
     CommunityRules.requireAuthorOrAdmin(user, current.authorUserId(), "没有权限删除该评论");
@@ -115,7 +119,8 @@ public class CommentService {
     }
   }
 
-  synchronized CommentView moderate(String authorization, String commentId, ModerateCommentRequest request) {
+  @Transactional
+  public synchronized CommentView moderate(String authorization, String commentId, ModerateCommentRequest request) {
     var user = auth.requireUser(authorization);
     CommunityRules.requireAdmin(user);
     var current = comments.findById(commentId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "评论不存在"));

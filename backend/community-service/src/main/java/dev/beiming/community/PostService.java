@@ -2,6 +2,7 @@ package dev.beiming.community;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.UUID;
@@ -30,21 +31,24 @@ public class PostService {
       var board = requireBoard(boardId);
       if (!CommunityRules.canViewBoard(viewer, board.visibility())) throw new ApiException(HttpStatus.NOT_FOUND, "板块不存在");
     }
-    var visibilities = viewer != null && viewer.isAdmin()
+    var contentVisibilities = viewer != null && viewer.isAdmin()
       ? List.of("PUBLIC", "MEMBER_ONLY", "ADMIN_ONLY")
+      : viewer != null ? List.of("PUBLIC", "MEMBER_ONLY") : List.of("PUBLIC");
+    var boardVisibilities = viewer != null && viewer.isAdmin()
+      ? List.of("PUBLIC", "MEMBER_ONLY", "ADMIN_ONLY", "HIDDEN")
       : viewer != null ? List.of("PUBLIC", "MEMBER_ONLY") : List.of("PUBLIC");
     var normalizedPage = CommunityRules.normalizePage(page);
     var normalizedSize = CommunityRules.normalizePageSize(pageSize);
-    var items = posts.publicList(visibilities, boardId, q, sort, normalizedPage, normalizedSize).stream()
+    var items = posts.publicList(contentVisibilities, boardVisibilities, boardId, q, sort, normalizedPage, normalizedSize).stream()
       .map(PostSummaryView::fromRecord)
       .toList();
-    return new PageResult<>(items, normalizedPage, normalizedSize, posts.countPublic(visibilities, boardId, q));
+    return new PageResult<>(items, normalizedPage, normalizedSize, posts.countPublic(contentVisibilities, boardVisibilities, boardId, q));
   }
 
   PostDetailView detail(String authorization, String postId, boolean incrementView) {
     var viewer = auth.optionalUser(authorization);
     var post = posts.findById(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "帖子不存在"));
-    if (!CommunityRules.canViewPost(viewer, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
+    if (!canViewPost(viewer, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
     if (incrementView) {
       posts.incrementViewCount(postId);
       post = posts.findById(postId).orElse(post);
@@ -52,10 +56,12 @@ public class PostService {
     return toDetail(post, viewer, authorization);
   }
 
-  synchronized PostDetailView create(String authorization, CreatePostRequest request) {
+  @Transactional
+  public synchronized PostDetailView create(String authorization, CreatePostRequest request) {
     var user = auth.requireUser(authorization);
     var board = requireBoard(CommunityRules.cleanRequired(request.boardId(), "板块不能为空"));
     if (!CommunityRules.canPostToBoard(user, board)) throw new ApiException(HttpStatus.FORBIDDEN, "没有该板块发帖权限");
+    CommunityRules.validatePollRequest(request.poll());
     var status = CommunityRules.editablePostStatus(request.status());
     var visibility = CommunityRules.contentVisibility(request.visibility());
     if (visibility == ContentVisibility.ADMIN_ONLY && !user.isAdmin()) {
@@ -94,7 +100,8 @@ public class PostService {
     return toDetail(posts.findById(post.id()).orElse(post), user, authorization);
   }
 
-  synchronized PostDetailView update(String authorization, String postId, UpdatePostRequest request) {
+  @Transactional
+  public synchronized PostDetailView update(String authorization, String postId, UpdatePostRequest request) {
     var user = auth.requireUser(authorization);
     var current = posts.findById(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "帖子不存在"));
     CommunityRules.requireAuthorOrAdmin(user, current.authorUserId(), "没有权限编辑该帖子");
@@ -136,7 +143,8 @@ public class PostService {
     return toDetail(next, user, authorization);
   }
 
-  synchronized void softDelete(String authorization, String postId) {
+  @Transactional
+  public synchronized void softDelete(String authorization, String postId) {
     var user = auth.requireUser(authorization);
     var current = posts.findById(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "帖子不存在"));
     CommunityRules.requireAuthorOrAdmin(user, current.authorUserId(), "没有权限删除该帖子");
@@ -159,7 +167,8 @@ public class PostService {
     return new PageResult<>(items, normalizedPage, normalizedSize, posts.countAdmin(boardId, status, authorUserId, q));
   }
 
-  synchronized PostDetailView moderate(String authorization, String postId, ModeratePostRequest request) {
+  @Transactional
+  public synchronized PostDetailView moderate(String authorization, String postId, ModeratePostRequest request) {
     var user = auth.requireUser(authorization);
     CommunityRules.requireAdmin(user);
     var current = posts.findById(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "帖子不存在"));
@@ -203,7 +212,7 @@ public class PostService {
     var normalizedPage = CommunityRules.normalizePage(page);
     var normalizedSize = CommunityRules.normalizePageSize(pageSize);
     var items = posts.favoriteList(user.id(), normalizedPage, normalizedSize).stream()
-      .filter(post -> CommunityRules.canViewPost(user, post))
+      .filter(post -> canViewPost(user, post))
       .map(PostSummaryView::fromRecord)
       .toList();
     return new PageResult<>(items, normalizedPage, normalizedSize, posts.countFavorites(user.id()));
@@ -211,6 +220,12 @@ public class PostService {
 
   PostRecord requirePost(String postId) {
     return posts.findById(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "帖子不存在"));
+  }
+
+  boolean canViewPost(CurrentUserView viewer, PostRecord post) {
+    if (!CommunityRules.canViewPost(viewer, post)) return false;
+    var board = boards.findById(post.boardId()).orElse(null);
+    return board != null && CommunityRules.canViewBoard(viewer, board.visibility());
   }
 
   private BoardRecord requireBoard(String boardId) {

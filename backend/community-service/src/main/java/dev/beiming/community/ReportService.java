@@ -2,6 +2,7 @@ package dev.beiming.community;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.UUID;
 
@@ -19,18 +20,20 @@ public class ReportService {
     this.auth = auth;
   }
 
-  synchronized ReportView reportPost(String authorization, String postId, CreateReportRequest request) {
+  @Transactional
+  public synchronized ReportView reportPost(String authorization, String postId, CreateReportRequest request) {
     var user = auth.requireUser(authorization);
     var post = posts.requirePost(postId);
-    if (!CommunityRules.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
+    if (!posts.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
     return createReport(user, ReportTargetType.POST.name(), postId, request);
   }
 
-  synchronized ReportView reportComment(String authorization, String commentId, CreateReportRequest request) {
+  @Transactional
+  public synchronized ReportView reportComment(String authorization, String commentId, CreateReportRequest request) {
     var user = auth.requireUser(authorization);
     var comment = comments.requireComment(commentId);
     var post = posts.requirePost(comment.postId());
-    if (!CommunityRules.canViewPost(user, post) || CommentStatus.parse(comment.status()) != CommentStatus.VISIBLE) {
+    if (!posts.canViewPost(user, post) || CommentStatus.parse(comment.status()) != CommentStatus.VISIBLE) {
       throw new ApiException(HttpStatus.NOT_FOUND, "评论不存在");
     }
     return createReport(user, ReportTargetType.COMMENT.name(), commentId, request);
@@ -45,7 +48,8 @@ public class ReportService {
     return new PageResult<>(items, normalizedPage, normalizedSize, reports.count(status));
   }
 
-  synchronized ReportView review(String authorization, String reportId, ReviewReportRequest request) {
+  @Transactional
+  public synchronized ReportView review(String authorization, String reportId, ReviewReportRequest request) {
     var user = auth.requireUser(authorization);
     CommunityRules.requireAdmin(user);
     var current = reports.findById(reportId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "举报不存在"));

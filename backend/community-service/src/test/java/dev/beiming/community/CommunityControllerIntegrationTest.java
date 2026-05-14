@@ -190,6 +190,55 @@ class CommunityControllerIntegrationTest {
   }
 
   @Test
+  void boardVisibilityAlsoProtectsPosts() throws Exception {
+    auth.login("admin-token", new CurrentUserView("user-admin", "Admin", "admin@example.com", "ADMIN"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+
+    var hiddenBoardId = boardId("archive");
+    var postId = createPost("admin-token", hiddenBoardId, "归档帖子", "archive only", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+
+    mvc.perform(get("/api/community/posts"))
+      .andExpect(status().isOk())
+      .andExpect(jsonPath("$.data.items.length()").value(0));
+
+    mvc.perform(get("/api/community/posts/" + postId))
+      .andExpect(status().isNotFound());
+
+    mvc.perform(get("/api/community/posts/" + postId).header("Authorization", bearer("member-token")))
+      .andExpect(status().isNotFound());
+
+    mvc.perform(get("/api/community/posts/" + postId).header("Authorization", bearer("admin-token")))
+      .andExpect(status().isOk())
+      .andExpect(jsonPath("$.data.title").value("归档帖子"));
+  }
+
+  @Test
+  void invalidPollDoesNotLeavePostBehind() throws Exception {
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    var invalidPoll = Map.of(
+      "question", "选哪个",
+      "voteMode", "SINGLE",
+      "resultVisibility", "ALWAYS",
+      "options", List.of(Map.of("text", "只有一个选项"))
+    );
+
+    mvc.perform(post("/api/community/posts")
+        .header("Authorization", bearer("member-token"))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(json(Map.of(
+          "boardId", boardId("events"),
+          "title", "坏投票",
+          "content", "should rollback",
+          "status", "PUBLISHED",
+          "visibility", "PUBLIC",
+          "poll", invalidPoll
+        ))))
+      .andExpect(status().isBadRequest());
+
+    assertThat(jdbc.queryForObject("select count(*) from beiming_community_posts where title = ?", Integer.class, "坏投票")).isZero();
+  }
+
+  @Test
   void postDetailIncrementsViewCount() throws Exception {
     auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
     var boardId = boardId("help");
@@ -402,6 +451,35 @@ class CommunityControllerIntegrationTest {
     mvc.perform(delete("/api/community/posts/" + postId + "/poll/votes").header("Authorization", bearer("member-token")))
       .andExpect(status().isOk())
       .andExpect(jsonPath("$.data.voted").value(false));
+  }
+
+  @Test
+  void expiredPollRejectsVotes() throws Exception {
+    auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    var pollBody = Map.of(
+      "question", "过期投票",
+      "voteMode", "SINGLE",
+      "resultVisibility", "ALWAYS",
+      "closesAt", 1,
+      "options", List.of(
+        Map.of("text", "A"),
+        Map.of("text", "B")
+      )
+    );
+    var postId = createPost("author-token", boardId("events"), "过期活动投票", "投票", "PUBLISHED", "PUBLIC", pollBody).at("/data/id").asText();
+    var detail = readJson(mvc.perform(get("/api/community/posts/" + postId).header("Authorization", bearer("member-token")))
+      .andExpect(status().isOk())
+      .andReturn()
+      .getResponse()
+      .getContentAsString());
+    var optionId = detail.at("/data/poll/options/0/id").asText();
+
+    mvc.perform(post("/api/community/posts/" + postId + "/poll/votes")
+        .header("Authorization", bearer("member-token"))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(json(Map.of("optionIds", List.of(optionId)))))
+      .andExpect(status().isBadRequest());
   }
 
   @Test

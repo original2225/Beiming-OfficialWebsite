@@ -47,40 +47,50 @@ public class PostRepository {
     return jdbc.query("select * from beiming_community_posts where id = ?", mapper, postId).stream().findFirst();
   }
 
-  List<PostRecord> publicList(List<String> visibilities, String boardId, String q, String sort, int page, int pageSize) {
+  List<PostRecord> publicList(List<String> contentVisibilities, List<String> boardVisibilities, String boardId, String q, String sort, int page, int pageSize) {
     var sql = new StringBuilder(
       """
-        select * from beiming_community_posts
-        where status = 'PUBLISHED'
-          and review_status = 'APPROVED'
+        select p.* from beiming_community_posts p
+        join beiming_community_boards b on b.id = p.board_id
+        where p.status = 'PUBLISHED'
+          and p.review_status = 'APPROVED'
       """
     );
     var args = new ArrayList<Object>();
-    if (!visibilities.isEmpty()) {
-      sql.append(" and visibility in (");
-      for (var i = 0; i < visibilities.size(); i++) {
+    if (!contentVisibilities.isEmpty()) {
+      sql.append(" and p.visibility in (");
+      for (var i = 0; i < contentVisibilities.size(); i++) {
         if (i > 0) sql.append(", ");
         sql.append("?");
-        args.add(visibilities.get(i));
+        args.add(contentVisibilities.get(i));
+      }
+      sql.append(")");
+    }
+    if (!boardVisibilities.isEmpty()) {
+      sql.append(" and b.visibility in (");
+      for (var i = 0; i < boardVisibilities.size(); i++) {
+        if (i > 0) sql.append(", ");
+        sql.append("?");
+        args.add(boardVisibilities.get(i));
       }
       sql.append(")");
     }
     if (!CommunityRules.clean(boardId).isBlank()) {
-      sql.append(" and board_id = ?");
+      sql.append(" and p.board_id = ?");
       args.add(CommunityRules.clean(boardId));
     }
     var term = CommunityRules.queryTerm(q);
     if (!term.isBlank()) {
-      sql.append(" and (lower(title) like ? or lower(content) like ? or lower(author_display_name) like ?)");
+      sql.append(" and (lower(p.title) like ? or lower(p.content) like ? or lower(p.author_display_name) like ?)");
       var like = "%" + term + "%";
       args.add(like);
       args.add(like);
       args.add(like);
     }
     if ("hot".equalsIgnoreCase(sort)) {
-      sql.append(" order by pinned desc, like_count desc, comment_count desc, published_at desc");
+      sql.append(" order by p.pinned desc, p.like_count desc, p.comment_count desc, p.published_at desc");
     } else {
-      sql.append(" order by pinned desc, published_at desc, created_at desc");
+      sql.append(" order by p.pinned desc, p.published_at desc, p.created_at desc");
     }
     sql.append(" limit ? offset ?");
     args.add(pageSize);
@@ -88,31 +98,41 @@ public class PostRepository {
     return jdbc.query(sql.toString(), mapper, args.toArray());
   }
 
-  int countPublic(List<String> visibilities, String boardId, String q) {
+  int countPublic(List<String> contentVisibilities, List<String> boardVisibilities, String boardId, String q) {
     var sql = new StringBuilder(
       """
-        select count(*) from beiming_community_posts
-        where status = 'PUBLISHED'
-          and review_status = 'APPROVED'
+        select count(*) from beiming_community_posts p
+        join beiming_community_boards b on b.id = p.board_id
+        where p.status = 'PUBLISHED'
+          and p.review_status = 'APPROVED'
       """
     );
     var args = new ArrayList<Object>();
-    if (!visibilities.isEmpty()) {
-      sql.append(" and visibility in (");
-      for (var i = 0; i < visibilities.size(); i++) {
+    if (!contentVisibilities.isEmpty()) {
+      sql.append(" and p.visibility in (");
+      for (var i = 0; i < contentVisibilities.size(); i++) {
         if (i > 0) sql.append(", ");
         sql.append("?");
-        args.add(visibilities.get(i));
+        args.add(contentVisibilities.get(i));
+      }
+      sql.append(")");
+    }
+    if (!boardVisibilities.isEmpty()) {
+      sql.append(" and b.visibility in (");
+      for (var i = 0; i < boardVisibilities.size(); i++) {
+        if (i > 0) sql.append(", ");
+        sql.append("?");
+        args.add(boardVisibilities.get(i));
       }
       sql.append(")");
     }
     if (!CommunityRules.clean(boardId).isBlank()) {
-      sql.append(" and board_id = ?");
+      sql.append(" and p.board_id = ?");
       args.add(CommunityRules.clean(boardId));
     }
     var term = CommunityRules.queryTerm(q);
     if (!term.isBlank()) {
-      sql.append(" and (lower(title) like ? or lower(content) like ? or lower(author_display_name) like ?)");
+      sql.append(" and (lower(p.title) like ? or lower(p.content) like ? or lower(p.author_display_name) like ?)");
       var like = "%" + term + "%";
       args.add(like);
       args.add(like);
