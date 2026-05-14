@@ -54,7 +54,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { beaconCleanupContainerUploads, cancelContainerFileDownload, cleanupContainerUploads, copyContainerFile, createContainer, createContainerFileEntry, createNode, deleteContainer, deleteContainerFile, deleteNode, extractContainerFile, fetchAdminMembers, fetchAdminNotificationDeliveries, fetchAdminNotificationEvents, fetchCommunityAdminPosts, fetchCommunityAdminReports, fetchCommunityAuditLogs, fetchContainer, fetchContainerFileContent, fetchContainerFileDownloadInfo, fetchContainerFiles, fetchContainers, fetchContainerStats, fetchImages, fetchInviteCodes, fetchNodeMetrics, fetchNodes, fetchUsers, fetchVms, operateContainer, pingNode, renameContainerFile, searchDockerImages, streamContainerFileRange, updateContainer, updateNode, uploadContainerFileChunkBinary } from './api.js';
+import { beaconCleanupContainerUploads, cancelContainerFileDownload, cleanupContainerUploads, copyContainerFile, createContainer, createContainerFileEntry, createNode, deleteContainer, deleteContainerFile, deleteNode, extractContainerFile, fetchContainer, fetchContainerFileContent, fetchContainerFileDownloadInfo, fetchContainerFiles, fetchContainers, fetchContainerStats, fetchImages, fetchNodeMetrics, fetchNodes, fetchVms, operateContainer, pingNode, renameContainerFile, searchDockerImages, streamContainerFileRange, updateContainer, updateNode, uploadContainerFileChunkBinary } from './api.js';
 import {
   bytesToMemoryInput,
   editRowsToEnvSpecs,
@@ -106,8 +106,6 @@ const session = {
   email: 'admin@beiming.dev',
   role: '超级管理员',
 };
-
-const ADMIN_TOKEN_STORAGE_KEY = 'beiming:admin-token';
 
 const navGroups = [
   {
@@ -467,7 +465,7 @@ function useBodyScrollLock() {
 }
 
 function ProductNav({ activeNode, activeView, nodes, query, setActiveNodeId, setActiveView, setQuery }) {
-  const items = navGroups.flatMap((group) => group.items);
+  const items = navGroups[0].items;
   const [nodeOpen, setNodeOpen] = useState(false);
   const nodeSwitcherRef = useRef(null);
 
@@ -4662,82 +4660,16 @@ function NetworkView() {
   );
 }
 
-function useAdminToken() {
-  const [token, setTokenState] = useState(() => {
-    if (typeof localStorage === 'undefined') return '';
-    return localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || '';
-  });
-  const setToken = (value) => {
-    setTokenState(value);
-    if (typeof localStorage === 'undefined') return;
-    if (value.trim()) localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, value.trim());
-    else localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
-  };
-  return [token, setToken];
-}
-
-function useAdminResource(loader, token, deps = []) {
-  const [state, setState] = useState({ loading: false, error: '', data: null });
-  const reload = () => {
-    if (!token.trim()) {
-      setState({ loading: false, error: '需要管理员 Bearer Token', data: null });
-      return;
-    }
-    setState((current) => ({ ...current, loading: true, error: '' }));
-    loader(token.trim())
-      .then((data) => setState({ loading: false, error: '', data }))
-      .catch((error) => setState({ loading: false, error: friendlyError(error.message), data: null }));
-  };
-  useEffect(() => {
-    reload();
-  }, [token, ...deps]);
-  return { ...state, reload };
-}
-
-function AdminTokenField({ token, setToken }) {
-  return (
-    <label className="admin-token-field">
-      <KeyRound size={16} />
-      <input
-        onChange={(event) => setToken(event.target.value)}
-        placeholder="管理员 Bearer Token"
-        type="password"
-        value={token}
-      />
-    </label>
-  );
-}
-
 function IdentityView() {
-  const [token, setToken] = useAdminToken();
-  const users = useAdminResource(fetchUsers, token);
-  const invites = useAdminResource(fetchInviteCodes, token);
-  const members = useAdminResource((authToken) => fetchAdminMembers(authToken, { pageSize: 12 }), token);
-  const userItems = Array.isArray(users.data) ? users.data : [];
-  const inviteItems = Array.isArray(invites.data) ? invites.data : [];
-  const memberItems = members.data?.items || [];
   return (
     <section className="page">
-      <PageHead title="用户与账号绑定" desc="用户管理、成员档案、邀请码和账号绑定状态都在这里。" action="刷新" onAction={() => {
-        users.reload();
-        invites.reload();
-        members.reload();
-      }} />
-      <AdminTokenField token={token} setToken={setToken} />
-      <div className="metric-grid three">
-        <Metric icon={UsersRound} label="认证用户" value={users.loading ? '读取中' : String(userItems.length)} trend={users.error || 'auth-service'} />
-        <Metric icon={CircleUserRound} label="成员档案" value={members.loading ? '读取中' : String(memberItems.length)} trend={members.error || 'profile-service'} />
-        <Metric icon={KeyRound} label="邀请码" value={invites.loading ? '读取中' : String(inviteItems.length)} trend={invites.error || 'invite-codes'} />
-      </div>
+      <PageHead title="用户与账号绑定" desc="用户管理、QQ 绑定、邮箱验证、Daemon Token 和资源授权都在这里。" action="邀请用户" />
       <div className="content-grid">
-        <Panel title="认证用户" action="刷新" icon={UsersRound} onAction={users.reload}>
-          <UserAdminTable users={userItems} loading={users.loading} error={users.error} />
+        <Panel title="成员" action="新增成员" icon={UsersRound}>
+          <UserTable />
         </Panel>
-        <Panel title="成员档案" action="刷新" icon={CircleUserRound} onAction={members.reload}>
-          <MemberProfileList members={memberItems} loading={members.loading} error={members.error} />
-        </Panel>
-        <Panel title="邀请码" action="刷新" icon={KeyRound} onAction={invites.reload}>
-          <InviteCodeList inviteCodes={inviteItems} loading={invites.loading} error={invites.error} />
+        <Panel title="当前账号绑定" action="绑定 QQ" icon={CircleUserRound}>
+          <AccountBindings />
         </Panel>
       </div>
     </section>
@@ -4745,222 +4677,19 @@ function IdentityView() {
 }
 
 function SecurityView() {
-  const [token, setToken] = useAdminToken();
-  const posts = useAdminResource((authToken) => fetchCommunityAdminPosts(authToken, { pageSize: 8 }), token);
-  const reports = useAdminResource((authToken) => fetchCommunityAdminReports(authToken, { pageSize: 8 }), token);
-  const audits = useAdminResource((authToken) => fetchCommunityAuditLogs(authToken, { pageSize: 10 }), token);
-  const events = useAdminResource((authToken) => fetchAdminNotificationEvents(authToken, { pageSize: 8 }), token);
-  const deliveries = useAdminResource((authToken) => fetchAdminNotificationDeliveries(authToken, { pageSize: 8 }), token);
-  const postItems = posts.data?.items || [];
-  const reportItems = reports.data?.items || [];
-  const auditItems = audits.data?.items || [];
-  const eventItems = events.data?.items || [];
-  const deliveryItems = deliveries.data?.items || [];
   return (
     <section className="page">
-      <PageHead title="安全审计" desc="社区审核、举报、审计日志、通知事件和投递状态统一查看。" action="刷新" onAction={() => {
-        posts.reload();
-        reports.reload();
-        audits.reload();
-        events.reload();
-        deliveries.reload();
-      }} />
-      <AdminTokenField token={token} setToken={setToken} />
-      <div className="metric-grid three">
-        <Metric icon={ShieldCheck} label="待看帖子" value={posts.loading ? '读取中' : String(postItems.length)} trend={posts.error || 'community admin'} />
-        <Metric icon={TriangleAlert} label="举报" value={reports.loading ? '读取中' : String(reportItems.length)} trend={reports.error || 'reports'} />
-        <Metric icon={Mail} label="通知事件" value={events.loading ? '读取中' : String(eventItems.length)} trend={events.error || 'notification-service'} />
-      </div>
+      <PageHead title="安全审计" desc="登录保护、资源操作审计、敏感命令记录与异常登录阻断。" action="导出日志" />
       <div className="content-grid">
-        <Panel title="社区审核队列" action="刷新" icon={ShieldCheck} onAction={posts.reload}>
-          <AdminPostList posts={postItems} loading={posts.loading} error={posts.error} />
+        <Panel title="审计事件" action="筛选" icon={ShieldCheck}>
+          <ActivityFeed />
         </Panel>
-        <Panel title="举报处理" action="刷新" icon={TriangleAlert} onAction={reports.reload}>
-          <ReportList reports={reportItems} loading={reports.loading} error={reports.error} />
-        </Panel>
-        <Panel title="审计日志" action="刷新" icon={LockKeyhole} onAction={audits.reload}>
-          <AuditLogList logs={auditItems} loading={audits.loading} error={audits.error} />
-        </Panel>
-        <Panel title="通知事件" action="刷新" icon={Mail} onAction={events.reload}>
-          <NotificationEventList events={eventItems} loading={events.loading} error={events.error} />
-        </Panel>
-        <Panel title="通知投递" action="刷新" icon={Zap} onAction={deliveries.reload}>
-          <NotificationDeliveryList deliveries={deliveryItems} loading={deliveries.loading} error={deliveries.error} />
+        <Panel title="安全基线" action="编辑策略" icon={LockKeyhole}>
+          <SecurityRules />
         </Panel>
       </div>
     </section>
   );
-}
-
-function AdminEmptyState({ loading, error, empty = '暂无数据' }) {
-  if (loading) return <div className="admin-empty">正在读取...</div>;
-  if (error) return <div className="admin-empty error">{error}</div>;
-  return <div className="admin-empty">{empty}</div>;
-}
-
-function UserAdminTable({ users, loading, error }) {
-  if (loading || error || users.length === 0) return <AdminEmptyState loading={loading} error={error} empty="暂无认证用户" />;
-  return (
-    <div className="admin-table">
-      <div className="admin-row admin-head">
-        <span>用户</span>
-        <span>角色</span>
-        <span>状态</span>
-        <span>邮箱验证</span>
-      </div>
-      {users.map((user) => (
-        <div className="admin-row" key={user.id || user.email}>
-          <div>
-            <strong>{user.displayName || user.username || user.email || user.id}</strong>
-            <small>{user.email || user.id}</small>
-          </div>
-          <span>{user.role || '-'}</span>
-          <Status status={statusText(user.status)} />
-          <span>{user.emailVerified ? '已验证' : '未验证'}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function MemberProfileList({ members, loading, error }) {
-  if (loading || error || members.length === 0) return <AdminEmptyState loading={loading} error={error} empty="暂无成员档案" />;
-  return (
-    <div className="admin-list">
-      {members.map((member) => (
-        <div className="admin-card-row" key={member.id || member.userId || member.displayName}>
-          <div className="mini-avatar">{String(member.displayName || member.minecraftId || '?').slice(0, 1)}</div>
-          <div>
-            <strong>{member.displayName || member.minecraftId || member.userId}</strong>
-            <span>{[member.minecraftId, member.qq, member.email].filter(Boolean).join(' / ') || '未绑定公开资料'}</span>
-          </div>
-          <Status status={statusText(member.status || member.visibility)} />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function InviteCodeList({ inviteCodes, loading, error }) {
-  if (loading || error || inviteCodes.length === 0) return <AdminEmptyState loading={loading} error={error} empty="暂无邀请码" />;
-  return (
-    <div className="admin-list">
-      {inviteCodes.map((invite) => (
-        <div className="admin-card-row code-row" key={invite.id || invite.code}>
-          <code>{invite.code}</code>
-          <div>
-            <strong>{invite.type || 'INVITE'}</strong>
-            <span>{invite.usedByUserId ? `已使用：${invite.usedByUserId}` : '未使用'}</span>
-          </div>
-          <Status status={statusText(invite.status)} />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function AdminPostList({ posts, loading, error }) {
-  if (loading || error || posts.length === 0) return <AdminEmptyState loading={loading} error={error} empty="暂无待审核帖子" />;
-  return (
-    <div className="admin-list">
-      {posts.map((post) => (
-        <div className="admin-card-row" key={post.id}>
-          <div className="metric-icon"><FileText size={17} /></div>
-          <div>
-            <strong>{post.title || post.id}</strong>
-            <span>{post.authorDisplayName || post.authorUserId || '匿名'} · {post.boardId || '未分区'}</span>
-          </div>
-          <Status status={statusText(post.reviewStatus || post.status)} />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ReportList({ reports, loading, error }) {
-  if (loading || error || reports.length === 0) return <AdminEmptyState loading={loading} error={error} empty="暂无举报" />;
-  return (
-    <div className="admin-list">
-      {reports.map((report) => (
-        <div className="admin-card-row" key={report.id}>
-          <div className="metric-icon"><TriangleAlert size={17} /></div>
-          <div>
-            <strong>{report.reason || report.targetType || report.id}</strong>
-            <span>{report.reporterDisplayName || report.reporterUserId || '未知用户'} · {report.targetId}</span>
-          </div>
-          <Status status={statusText(report.status)} />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function AuditLogList({ logs, loading, error }) {
-  if (loading || error || logs.length === 0) return <AdminEmptyState loading={loading} error={error} empty="暂无审计日志" />;
-  return (
-    <div className="feed">
-      {logs.map((log) => (
-        <div className="feed-item" key={log.id || `${log.action}-${log.createdAt}`}>
-          <span className="dot slate"></span>
-          <div>
-            <strong>{log.action || log.eventType || 'AUDIT'}</strong>
-            <p>{[log.actorDisplayName || log.actorUserId, log.targetType, log.targetId].filter(Boolean).join(' · ')}</p>
-          </div>
-          <em>{formatAdminTime(log.createdAt)}</em>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function NotificationEventList({ events, loading, error }) {
-  if (loading || error || events.length === 0) return <AdminEmptyState loading={loading} error={error} empty="暂无通知事件" />;
-  return (
-    <div className="admin-list">
-      {events.map((event) => (
-        <div className="admin-card-row" key={event.id}>
-          <div className="metric-icon"><Mail size={17} /></div>
-          <div>
-            <strong>{event.eventType || event.type || event.id}</strong>
-            <span>{event.recipientUserId || '未指定用户'} · {event.targetType || 'target'}</span>
-          </div>
-          <small>{formatAdminTime(event.createdAt)}</small>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function NotificationDeliveryList({ deliveries, loading, error }) {
-  if (loading || error || deliveries.length === 0) return <AdminEmptyState loading={loading} error={error} empty="暂无投递记录" />;
-  return (
-    <div className="admin-list">
-      {deliveries.map((delivery) => (
-        <div className="admin-card-row" key={delivery.id}>
-          <div className="metric-icon"><Zap size={17} /></div>
-          <div>
-            <strong>{delivery.channel || 'IN_APP'}</strong>
-            <span>{delivery.recipientUserId || '未指定用户'} · {delivery.notificationId || delivery.eventId || 'notification'}</span>
-          </div>
-          <Status status={statusText(delivery.status)} />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function statusText(status = '') {
-  const value = String(status || '').toUpperCase();
-  if (['ACTIVE', 'APPROVED', 'SENT', 'READ', 'NORMAL', 'ENABLED', 'USED'].includes(value)) return '运行中';
-  if (['PENDING', 'QUEUED', 'UNREAD', 'REVIEWING'].includes(value)) return '部署中';
-  return value || '维护中';
-}
-
-function formatAdminTime(value) {
-  if (!value) return '';
-  const date = typeof value === 'number' ? new Date(value) : new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString('zh-CN', { hour12: false });
 }
 
 function RemoteNodesView({ nodes, notify, onNodesChange }) {
