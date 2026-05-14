@@ -1,10 +1,33 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8787';
+const API_BASE_URL = import.meta.env?.VITE_API_BASE_URL || 'http://127.0.0.1:8787';
 
 const enc = (value) => encodeURIComponent(value);
 const nodePath = (nodeId, suffix = '') => `/api/nodes/${enc(nodeId)}${suffix}`;
 const containerPath = (nodeId, containerId, suffix = '') => nodePath(nodeId, `/containers/${enc(containerId)}${suffix}`);
 
-async function request(path, options) {
+function authHeaders(token = '', headers = {}) {
+  const normalized = token ? token.trim() : '';
+  return normalized ? { ...headers, Authorization: `Bearer ${normalized}` } : headers;
+}
+
+function queryString(params = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    query.set(key, String(value));
+  });
+  const text = query.toString();
+  return text ? `?${text}` : '';
+}
+
+function pagedParams(params = {}) {
+  return {
+    ...params,
+    page: params.page || 1,
+    pageSize: params.pageSize || 20,
+  };
+}
+
+async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, options);
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.ok === false) {
@@ -15,6 +38,54 @@ async function request(path, options) {
 
 export function fetchNodes() {
   return request('/api/nodes');
+}
+
+export function fetchUsers(token = '') {
+  return request('/api/users', {
+    headers: authHeaders(token),
+  });
+}
+
+export function fetchInviteCodes(token = '') {
+  return request('/api/invite-codes', {
+    headers: authHeaders(token),
+  });
+}
+
+export function fetchAdminMembers(token = '', params = {}) {
+  return request(`/api/profile/admin/members${queryString(pagedParams(params))}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function fetchCommunityAdminPosts(token = '', params = {}) {
+  return request(`/api/community/admin/posts${queryString(pagedParams(params))}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function fetchCommunityAdminReports(token = '', params = {}) {
+  return request(`/api/community/admin/reports${queryString(pagedParams(params))}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function fetchCommunityAuditLogs(token = '', params = {}) {
+  return request(`/api/community/admin/audit-logs${queryString(pagedParams(params))}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function fetchAdminNotificationEvents(token = '', params = {}) {
+  return request(`/api/notifications/admin/events${queryString(pagedParams(params))}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function fetchAdminNotificationDeliveries(token = '', params = {}) {
+  return request(`/api/notifications/admin/deliveries${queryString(pagedParams(params))}`, {
+    headers: authHeaders(token),
+  });
 }
 
 export function pingNode(nodeId) {

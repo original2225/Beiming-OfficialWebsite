@@ -14,6 +14,7 @@
     "dev:full": "node scripts/dev-full.js",
     "start:beiming": "powershell -ExecutionPolicy Bypass -File scripts/start-beiming.ps1",
     "build": "vite build",
+    "test": "node --test",
     "spring:build": "cd backend/auth-service && mvn package && cd ../api-gateway && mvn package && cd ../resource-service && mvn package && cd ../profile-service && mvn package && cd ../community-service && mvn package && cd ../notification-service && mvn package",
     "preview": "vite preview --host 127.0.0.1",
     "daemon:build:win": "powershell -NoProfile -Command \"New-Item -ItemType Directory -Force bin | Out-Null; Set-Location backend/node-daemon; go build -o ../../bin/beiming-daemon.exe .\"",
