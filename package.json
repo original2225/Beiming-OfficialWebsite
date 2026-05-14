@@ -36,6 +36,7 @@
     "express": "^5.2.1",
     "lucide-react": "^0.561.0",
     "monaco-editor": "^0.55.1",
+    "pinyin-pro": "^3.28.1",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "socket.io": "^4.8.3",

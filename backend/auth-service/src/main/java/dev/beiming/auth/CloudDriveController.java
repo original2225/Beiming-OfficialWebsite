@@ -52,6 +52,22 @@ public class CloudDriveController {
     return ApiEnvelope.ok(cloudDrive.connect(bearer(authorization), body));
   }
 
+  @PostMapping("/api/cloud/onedrive/shared-folder")
+  ApiEnvelope<Map<String, Object>> mountSharedFolder(
+    @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
+    @RequestBody Map<String, Object> body
+  ) {
+    return ApiEnvelope.ok(cloudDrive.mountSharedFolder(bearer(authorization), body));
+  }
+
+  @PostMapping("/api/cloud/onedrive/shared-item")
+  ApiEnvelope<Map<String, Object>> mountSharedItem(
+    @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
+    @RequestBody Map<String, Object> body
+  ) {
+    return ApiEnvelope.ok(cloudDrive.mountSharedItem(bearer(authorization), body));
+  }
+
   @DeleteMapping("/api/cloud/drives/{driveId}")
   ApiEnvelope<Map<String, Object>> disconnect(
     @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
@@ -65,9 +81,11 @@ public class CloudDriveController {
   ApiEnvelope<Map<String, Object>> list(
     @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
     @PathVariable String driveId,
-    @RequestParam(value = "itemId", defaultValue = "root") String itemId
+    @RequestParam(value = "itemId", defaultValue = "root") String itemId,
+    @RequestParam(value = "cursor", defaultValue = "") String cursor,
+    @RequestParam(value = "limit", defaultValue = "80") int limit
   ) {
-    return ApiEnvelope.ok(cloudDrive.list(bearer(authorization), driveId, itemId));
+    return ApiEnvelope.ok(cloudDrive.list(bearer(authorization), driveId, itemId, cursor, limit));
   }
 
   @PostMapping("/api/cloud/drives/{driveId}/folders")
@@ -87,6 +105,26 @@ public class CloudDriveController {
     @RequestBody Map<String, Object> body
   ) {
     return ApiEnvelope.ok(cloudDrive.rename(bearer(authorization), driveId, itemId, body));
+  }
+
+  @PostMapping("/api/cloud/drives/{driveId}/items/{itemId}/copy")
+  ApiEnvelope<Map<String, Object>> copy(
+    @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
+    @PathVariable String driveId,
+    @PathVariable String itemId,
+    @RequestBody Map<String, Object> body
+  ) {
+    return ApiEnvelope.ok(cloudDrive.copy(bearer(authorization), driveId, itemId, body));
+  }
+
+  @PostMapping("/api/cloud/drives/{driveId}/items/{itemId}/move")
+  ApiEnvelope<Map<String, Object>> move(
+    @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
+    @PathVariable String driveId,
+    @PathVariable String itemId,
+    @RequestBody Map<String, Object> body
+  ) {
+    return ApiEnvelope.ok(cloudDrive.move(bearer(authorization), driveId, itemId, body));
   }
 
   @DeleteMapping("/api/cloud/drives/{driveId}/items/{itemId}")

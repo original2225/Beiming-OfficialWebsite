@@ -11,3 +11,7 @@ func chooseDownloadPath(defaultName string) (string, error) {
 func revealDownloadedFile(path string) error {
 	return nil
 }
+
+func chooseUploadFiles() ([]uploadFileSelection, error) {
+	return nil, errSavePathCancelled
+}

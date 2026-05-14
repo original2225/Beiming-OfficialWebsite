@@ -1,8 +1,8 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { pinyin } from 'pinyin-pro';
 import '@xterm/xterm/css/xterm.css';
 import {
-  Activity,
   AlertCircle,
   Box,
   Check,
@@ -21,26 +21,22 @@ import {
   ArrowLeft,
   FileText,
   Folder,
-  Gauge,
   HardDrive,
-  KeyRound,
   Layers3,
-  LayoutDashboard,
-  Link2,
+  Link,
   LockKeyhole,
-  Mail,
-  MessageCircle,
   MonitorCog,
   MoreHorizontal,
   Network,
   PackageOpen,
   Minus,
+  Pause,
   PencilLine,
+  Play,
   Plus,
   Power,
   RotateCw,
   Search,
-  Server,
   ServerCog,
   Settings2,
   ShieldCheck,
@@ -54,7 +50,11 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { beaconCleanupContainerUploads, cancelContainerFileDownload, cleanupContainerUploads, copyContainerFile, createContainer, createContainerFileEntry, createNode, deleteContainer, deleteContainerFile, deleteNode, extractContainerFile, fetchContainer, fetchContainerFileContent, fetchContainerFileDownloadInfo, fetchContainerFiles, fetchContainers, fetchContainerStats, fetchImages, fetchNodeMetrics, fetchNodes, fetchVms, operateContainer, pingNode, renameContainerFile, searchDockerImages, streamContainerFileRange, updateContainer, updateNode, uploadContainerFileChunkBinary } from './api.js';
+import { logo, containerStateGuardTtl } from './app/config.js';
+import { accounts, navGroups } from './app/navigation.jsx';
+import { readRouteState, updateRouteState } from './app/routing.js';
+import { containerFinalStates, readCachedContainer, readCachedContainers, writeCachedContainer, writeCachedContainers } from './features/containers/cache.js';
+import { beaconCleanupContainerUploads, cancelContainerFileDownload, cancelLocalDownload, cancelLocalUpload, cleanupContainerUploads, connectOneDrive, copyCloudItem, copyContainerFile, createCloudFolder, createCloudUploadSession, createContainer, createContainerFileEntry, createDaemonRealtimeClientUrl, createNode, deleteCloudItem, deleteContainer, deleteContainerFile, deleteNode, disconnectCloudDrive, extractContainerFile, fetchCloudDownloadInfo, fetchCloudFiles, fetchContainer, fetchContainerFileContent, fetchContainerFileDownloadInfo, fetchContainerFiles, fetchContainerLogs, fetchContainers, fetchContainerStats, fetchCurrentUser, fetchImages, fetchLocalDownloadStatus, fetchLocalTransfers, fetchLocalUploadStatus, fetchNodeMetrics, fetchNodes, fetchOneDriveStatus, fetchUsers, fetchVms, loginUser, logoutUser, mountOneDriveSharedFolder, moveCloudItem, operateContainer, operateVm, pauseLocalDownload, pingLocalDownloader, pingNode, registerUser, renameCloudItem, renameContainerFile, resumeLocalDownload, revealLocalDownload, saveOneDriveConfig, searchDockerImages, selectLocalUploadFiles, setApiAuthToken, startLocalDownload, startLocalUpload, startOneDriveAuth, streamContainerFileRange, updateContainer, updateNode, uploadContainerFileChunkBinary } from './shared/api.js';
 import {
   bytesToMemoryInput,
   editRowsToEnvSpecs,
@@ -85,62 +85,100 @@ import {
   renderTerminalOutput,
   saveBlobFile,
   splitLines,
-} from './domain-utils.js';
-import { activityTasks, demoUsers, fallbackNodes, fallbackResources, filterByQuery, mapContainersToResources, mapVmsToResources } from './resource-model.js';
+} from './shared/domain-utils.js';
+import { activityTasks, fallbackNodes, formatNodeDisplayName, mapContainersToResources, mapVmsToResources } from './shared/resource-model.js';
+import { createRealtimeClient } from './shared/realtime.js';
+import { runAdaptiveRangeDownload } from './shared/range-download.js';
 
-const logo = '/beiming-logo.webp';
-const SOCKET_BASE_URL = import.meta.env.VITE_SOCKET_BASE_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8788';
-const CONTAINER_CACHE_PREFIX = 'beiming:containers:';
-const CONTAINER_DETAIL_CACHE_PREFIX = 'beiming:container:';
-const CONTAINER_CACHE_TTL = 5 * 60 * 1000;
-const CONTAINER_STATE_GUARD_TTL = 2500;
 const MonacoEditor = lazy(() => import('@monaco-editor/react'));
+const AUTH_TOKEN_STORAGE_KEY = 'beiming.auth.token';
+const DOWNLOAD_THREADS_STORAGE_KEY = 'beiming.download.threads';
+const UPLOAD_THREADS_STORAGE_KEY = 'beiming.upload.threads';
+const MAX_DOWNLOAD_THREADS = 256;
+const MAX_UPLOAD_THREADS = 64;
+const LOCAL_DOWNLOADER_VERSION = '2026.05.12.35';
+const LOCAL_DOWNLOADER_INSTALLER_PATH = '/downloads/beiming-local-downloader.exe';
+const BROWSER_MEMORY_DOWNLOAD_LIMIT = 256 * 1024 * 1024;
+const DOWNLOAD_WRITE_BUFFER_LIMIT = 64 * 1024 * 1024;
+const CLOUD_EXTERNAL_REFRESH_INTERVAL = 3500;
+const clampThreads = (value, maxThreads) => {
+  const count = Number.parseInt(value, 10);
+  return Number.isFinite(count) ? Math.max(1, Math.min(maxThreads, count)) : 0;
+};
+const clampDownloadThreads = (value) => clampThreads(value, MAX_DOWNLOAD_THREADS);
+const clampUploadThreads = (value) => clampThreads(value, MAX_UPLOAD_THREADS);
+const readDownloadThreads = () => {
+  if (typeof window === 'undefined') return 0;
+  return clampDownloadThreads(window.localStorage.getItem(DOWNLOAD_THREADS_STORAGE_KEY) || '');
+};
+const writeDownloadThreads = (value) => {
+  const count = clampDownloadThreads(value);
+  if (typeof window === 'undefined') return count;
+  if (count > 0) window.localStorage.setItem(DOWNLOAD_THREADS_STORAGE_KEY, String(count));
+  else window.localStorage.removeItem(DOWNLOAD_THREADS_STORAGE_KEY);
+  return count;
+};
+const readUploadThreads = () => {
+  if (typeof window === 'undefined') return 0;
+  return clampUploadThreads(window.localStorage.getItem(UPLOAD_THREADS_STORAGE_KEY) || '');
+};
+const writeUploadThreads = (value) => {
+  const count = clampUploadThreads(value);
+  if (typeof window === 'undefined') return count;
+  if (count > 0) window.localStorage.setItem(UPLOAD_THREADS_STORAGE_KEY, String(count));
+  else window.localStorage.removeItem(UPLOAD_THREADS_STORAGE_KEY);
+  return count;
+};
 const preloadTerminalModules = () => Promise.all([
-  import('socket.io-client'),
   import('@xterm/xterm'),
   import('@xterm/addon-fit'),
 ]).catch(() => {});
 
-const session = {
-  name: '林观澜',
-  email: 'admin@beiming.dev',
-  role: '超级管理员',
-};
+function hasContainerStats(stats = {}) {
+  return Number(stats.cpuUsagePercent || stats.cpuPercent || 0) > 0
+    || Number(stats.memoryUsedBytes || 0) > 0
+    || Number(stats.memoryLimitBytes || 0) > 0
+    || Number(stats.swapUsedBytes || 0) > 0
+    || Number(stats.networkRxBytes || 0) > 0
+    || Number(stats.networkTxBytes || 0) > 0;
+}
 
-const navGroups = [
-  {
-    title: '资源',
-    items: [
-      { id: 'overview', label: '概览', icon: LayoutDashboard },
-      { id: 'vm', label: '虚拟机', icon: MonitorCog },
-      { id: 'containers', label: '容器', icon: Container },
-    ],
-  },
-  {
-    title: '平台',
-    items: [
-      { id: 'network', label: '网络与存储', icon: Network },
-      { id: 'identity', label: '用户与绑定', icon: UsersRound },
-      { id: 'security', label: '安全审计', icon: ShieldCheck },
-    ],
-  },
-];
+function keepPreviousContainerStats(nextContainer, previousContainer) {
+  if (!nextContainer || hasContainerStats(nextContainer.stats)) return nextContainer;
+  if (!hasContainerStats(previousContainer?.stats)) return nextContainer;
+  return {
+    ...nextContainer,
+    load: previousContainer.load,
+    stats: previousContainer.stats,
+    raw: { ...(nextContainer.raw || {}), stats: previousContainer.stats },
+  };
+}
 
-const accounts = [
-  { provider: '邮箱', value: 'admin@beiming.dev', status: '已验证', icon: Mail },
-  { provider: 'QQ', value: '284****920', status: '已绑定', icon: MessageCircle },
-  { provider: 'Daemon Token', value: '本地保存', status: '已配置', icon: KeyRound },
-];
+function getResourceNodeDisplayName(resource, node) {
+  const activeNodeName = formatNodeDisplayName(node);
+  const activeNodeId = String(node?.id || '').trim();
+  const resourceNodeId = String(resource?.nodeId || '').trim();
+  if (activeNodeName && activeNodeName !== '-' && (!resourceNodeId || resourceNodeId === activeNodeId)) {
+    return activeNodeName;
+  }
+  const resourceRegion = String(resource?.region || '').trim();
+  if (resourceRegion && resourceRegion !== resourceNodeId) return resourceRegion;
+  return activeNodeName !== '-' ? activeNodeName : resourceNodeId || '-';
+}
 
 function App() {
   const initialRoute = readRouteState();
+  const [authToken, setAuthToken] = useState(() => window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || '');
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(Boolean(authToken));
+  const [authError, setAuthError] = useState('');
   const [activeView, setActiveViewState] = useState(initialRoute.view);
-  const [query, setQuery] = useState('');
+  const [resourceView, setResourceViewState] = useState(initialRoute.resourceView || 'containers');
   const [nodes, setNodes] = useState(fallbackNodes);
   const [activeNodeId, setActiveNodeIdState] = useState(initialRoute.nodeId || fallbackNodes[0].id);
   const [routeContainerId, setRouteContainerId] = useState(initialRoute.containerId);
   const [remoteResources, setRemoteResources] = useState(() => {
-    if (initialRoute.view !== 'containers') return [];
+    if (initialRoute.view !== 'resources' || initialRoute.resourceView !== 'containers') return [];
     const nodeId = initialRoute.nodeId || fallbackNodes[0].id;
     const node = fallbackNodes.find((item) => item.id === nodeId) || fallbackNodes[0];
     const cachedDetail = initialRoute.containerId ? readCachedContainer(nodeId, initialRoute.containerId) : null;
@@ -157,10 +195,50 @@ function App() {
   const containerStateGuardRef = useRef(new Map());
   const activeNode = nodes.find((node) => node.id === activeNodeId) || nodes[0] || fallbackNodes[0];
   useEffect(() => {
+    setApiAuthToken(authToken);
+    if (authToken) window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, authToken);
+    else window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  }, [authToken]);
+  useEffect(() => {
+    if (!authToken) {
+      setCurrentUser(null);
+      setAuthLoading(false);
+      return;
+    }
+    let ignore = false;
+    setAuthLoading(true);
+    fetchCurrentUser()
+      .then((user) => {
+        if (ignore) return;
+        setCurrentUser(user);
+        setAuthError('');
+      })
+      .catch((error) => {
+        if (ignore) return;
+        setAuthToken('');
+        setCurrentUser(null);
+        setAuthError(error.message);
+      })
+      .finally(() => {
+        if (!ignore) setAuthLoading(false);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [authToken]);
+  const notify = (toast) => {
+    const id = `${Date.now()}-${Math.random()}`;
+    setToasts((current) => [...current, { id, type: 'success', ...toast }]);
+    setTimeout(() => {
+      setToasts((current) => current.filter((item) => item.id !== id));
+    }, toast.duration || 3200);
+  };
+  const transferManager = useTransferManager(notify);
+  useEffect(() => {
     remoteResourcesRef.current = remoteResources;
   }, [remoteResources]);
   const mergeContainerResources = (nextResources) => {
-    if (activeView !== 'containers') return nextResources;
+    if (activeView !== 'resources' || resourceView !== 'containers') return nextResources;
     const now = Date.now();
     return nextResources.map((item) => {
       const guard = containerStateGuardRef.current.get(item.id) || containerStateGuardRef.current.get(item.name);
@@ -179,26 +257,14 @@ function App() {
     });
   };
   const preserveContainerStats = (nextResources) => {
-    if (activeView !== 'containers') return nextResources;
+    if (activeView !== 'resources' || resourceView !== 'containers') return nextResources;
     const current = remoteResourcesRef.current;
     const currentById = new Map(current.map((item) => [item.id, item]));
     const currentByName = new Map(current.map((item) => [item.name, item]));
     return nextResources.map((item) => {
       const previous = currentById.get(item.id) || currentByName.get(item.name);
       if (!previous?.stats) return item;
-      const hasIncomingStats = Number(item.stats?.cpuPercent || 0) > 0
-        || Number(item.stats?.memoryUsedBytes || 0) > 0
-        || Number(item.stats?.memoryLimitBytes || 0) > 0
-        || Number(item.stats?.swapUsedBytes || 0) > 0
-        || Number(item.stats?.networkRxBytes || 0) > 0
-        || Number(item.stats?.networkTxBytes || 0) > 0;
-      if (hasIncomingStats) return item;
-      return {
-        ...item,
-        load: previous.load,
-        stats: previous.stats,
-        raw: { ...(item.raw || {}), stats: previous.stats },
-      };
+      return keepPreviousContainerStats(item, previous);
     });
   };
   const cacheContainerResources = (nodeId, resources) => {
@@ -214,22 +280,29 @@ function App() {
     return true;
   };
   const setActiveView = (view) => {
-    if (view === 'containers') {
+    if (view === 'resources' && resourceView === 'containers') {
       hydrateContainerResourcesFromCache(activeNodeId, activeNode);
-    } else if (view === 'vm') {
-      setRemoteResources([]);
     }
     setActiveViewState(view);
     setRouteContainerId('');
-    updateRouteState({ view, nodeId: activeNodeId, containerId: '' });
+    updateRouteState({ view, resourceView, nodeId: activeNodeId, containerId: '' });
+  };
+  const setResourceView = (view) => {
+    if (view === resourceView) return;
+    if (view === 'containers') hydrateContainerResourcesFromCache(activeNodeId, activeNode);
+    else if (view === 'vm') setRemoteResources([]);
+    setResourceViewState(view);
+    setRouteContainerId('');
+    updateRouteState({ view: 'resources', resourceView: view, nodeId: activeNodeId, containerId: '' });
   };
   const setActiveNodeId = (nodeId) => {
     setActiveNodeIdState(nodeId);
     setRouteContainerId('');
-    updateRouteState({ view: activeView, nodeId, containerId: '' });
+    updateRouteState({ view: activeView, resourceView, nodeId, containerId: '' });
   };
 
   useEffect(() => {
+    if (!currentUser) return;
     let ignore = false;
     fetchNodes()
       .then((nextNodes) => {
@@ -237,7 +310,7 @@ function App() {
         setNodes(nextNodes);
         setActiveNodeIdState((current) => {
           const nextNodeId = nextNodes.some((node) => node.id === current) ? current : nextNodes[0].id;
-          if (initialRoute.view === 'containers') {
+          if (initialRoute.view === 'resources' && initialRoute.resourceView === 'containers') {
             const nextNode = nextNodes.find((node) => node.id === nextNodeId) || nextNodes[0];
             const cached = readCachedContainers(nextNodeId);
             if (cached.length > 0) setRemoteResources(mapContainersToResources(cached, nextNode));
@@ -245,25 +318,32 @@ function App() {
           return nextNodeId;
         });
       })
-      .catch(() => {
-        if (!ignore) setNodes(fallbackNodes);
+      .catch((error) => {
+        if (ignore) return;
+        if (error?.status === 401 || /登录|过期|unauthorized/i.test(error?.message || '')) {
+          setAuthToken('');
+          setCurrentUser(null);
+          setAuthError('登录已过期，请重新登录');
+          return;
+        }
+        setRemoteError(friendlyError(error.message));
       });
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [currentUser]);
 
   useEffect(() => {
-    if (!['vm', 'containers'].includes(activeView) || !activeNode?.id) return;
-    if (activeView === 'containers' && routeContainerId && remoteResources.length === 0) return;
+    if (activeView !== 'resources' || !activeNode?.id) return;
+    if (resourceView === 'containers' && routeContainerId && remoteResources.length === 0) return;
     const requestId = remoteRequestSeq.current + 1;
     remoteRequestSeq.current = requestId;
-    const scope = `${activeView}:${activeNode.id}`;
+    const scope = `${resourceView}:${activeNode.id}`;
     const isNewScope = resourceScopeRef.current !== scope;
     resourceScopeRef.current = scope;
     let hasWarmSnapshot = remoteResources.length > 0;
     if (isNewScope) {
-      if (activeView === 'containers') {
+      if (resourceView === 'containers') {
         hasWarmSnapshot = hydrateContainerResourcesFromCache(activeNode.id, activeNode);
         if (!hasWarmSnapshot) setRemoteResources([]);
       } else {
@@ -273,15 +353,15 @@ function App() {
     }
     setRemoteLoading(!hasWarmSnapshot);
     setRemoteError('');
-    const loader = activeView === 'containers' ? fetchContainers : fetchVms;
-    loader(activeNode.id, activeView === 'containers' && isNewScope ? { fast: true } : undefined)
+    const loader = resourceView === 'containers' ? fetchContainers : fetchVms;
+    loader(activeNode, resourceView === 'containers' && isNewScope ? { fast: true } : undefined)
       .then((items) => {
         if (remoteRequestSeq.current !== requestId) return;
-        const mapped = activeView === 'containers'
+        const mapped = resourceView === 'containers'
           ? mapContainersToResources(items, activeNode)
           : mapVmsToResources(items, activeNode);
         const nextResources = mergeContainerResources(preserveContainerStats(mapped));
-        if (activeView === 'containers') cacheContainerResources(activeNode.id, nextResources);
+        if (resourceView === 'containers') cacheContainerResources(activeNode.id, nextResources);
         setRemoteResources(nextResources);
       })
       .catch((error) => {
@@ -292,10 +372,10 @@ function App() {
       .finally(() => {
         if (remoteRequestSeq.current === requestId) setRemoteLoading(false);
       });
-  }, [activeNode?.id, activeView, reloadKey, routeContainerId, remoteResources.length]);
+  }, [activeNode?.id, activeNode?.daemonUrl, activeNode?.daemonToken, activeView, resourceView, reloadKey, routeContainerId, remoteResources.length]);
 
   useEffect(() => {
-    if (activeView !== 'containers' || !activeNode?.id) return;
+    if (activeView !== 'resources' || resourceView !== 'containers' || !activeNode?.id) return;
     if (routeContainerId && remoteResources.length === 0) return;
     const cached = readCachedContainers(activeNode.id);
     if (cached.length > 0) {
@@ -331,7 +411,7 @@ function App() {
       if (statsRunning) return;
       statsRunning = true;
       try {
-        const items = await fetchContainerStats(activeNode.id);
+        const items = await fetchContainerStats(activeNode);
         if (ignore) return;
         mergeStats(items);
         setRemoteError('');
@@ -345,7 +425,7 @@ function App() {
       if (listRunning) return;
       listRunning = true;
       try {
-        const items = await fetchContainers(activeNode.id, { fast: true });
+        const items = await fetchContainers(activeNode, { fast: true });
         if (ignore) return;
         const nextResources = mergeContainerResources(preserveContainerStats(mapContainersToResources(items, activeNode)));
         cacheContainerResources(activeNode.id, nextResources);
@@ -366,65 +446,1314 @@ function App() {
       clearInterval(statsTimer);
       clearInterval(listTimer);
     };
-  }, [activeNode?.id, activeView, routeContainerId, remoteResources.length]);
-
-  const filteredResources = useMemo(() => {
-    return fallbackResources.filter((item) => `${item.name}${item.kind}${item.region}`.toLowerCase().includes(query.toLowerCase()));
-  }, [query]);
-
-  const scopedResources = useMemo(() => {
-    return filteredResources.filter((item) => {
-      if (item.kind === 'Minecraft') return true;
-      return item.nodeId === activeNodeId;
-    });
-  }, [filteredResources, activeNodeId]);
-
-  const notify = (toast) => {
-    const id = `${Date.now()}-${Math.random()}`;
-    setToasts((current) => [...current, { id, type: 'success', ...toast }]);
-    setTimeout(() => {
-      setToasts((current) => current.filter((item) => item.id !== id));
-    }, toast.duration || 3200);
-  };
+  }, [activeNode?.id, activeNode?.daemonUrl, activeNode?.daemonToken, activeView, resourceView, routeContainerId, remoteResources.length]);
 
   return (
     <div className="shell">
-      <ProductNav
-        activeNode={activeNode}
-        activeView={activeView}
-        nodes={nodes}
-        query={query}
-        setActiveNodeId={setActiveNodeId}
-        setActiveView={setActiveView}
-        setQuery={setQuery}
-      />
-      <main className="main">
-        {activeView === 'overview' && <Overview resources={scopedResources} activeNode={activeNode} />}
-        {activeView === 'vm' && <ResourceCenter title="虚拟机" type="Virtual Machine" resources={filterByQuery(remoteResources, query)} activeNode={activeNode} loading={remoteLoading} error={remoteError} notify={notify} onRetry={() => {
-          setReloadKey((value) => value + 1);
-          notify({ title: '已重新读取虚拟机', message: activeNode?.name });
-        }} />}
-        {activeView === 'containers' && <ResourceCenter title="容器" type="Container" resources={filterByQuery(remoteResources, query)} activeNode={activeNode} loading={remoteLoading} error={remoteError} variant="containers" notify={notify} initialContainerId={routeContainerId} onContainerSnapshot={(container) => setRemoteResources((current) => {
-          const guard = { container, expiresAt: Date.now() + CONTAINER_STATE_GUARD_TTL };
-          containerStateGuardRef.current.set(container.id, guard);
-          containerStateGuardRef.current.set(container.name, guard);
-          const index = current.findIndex((item) => item.id === container.id || item.name === container.name);
-          if (index < 0) return current.length > 0 ? [container, ...current] : [container];
-          return current.map((item, itemIndex) => (itemIndex === index ? container : item));
-        })} onContainerRouteChange={(containerId) => {
-          const nextContainerId = containerId || '';
-          setRouteContainerId(nextContainerId);
-          updateRouteState({ view: 'containers', nodeId: activeNode?.id, containerId: nextContainerId });
-        }} onRetry={() => {
-          setReloadKey((value) => value + 1);
-        }} />}
-        {activeView === 'nodes' && <RemoteNodesView nodes={nodes} notify={notify} onNodesChange={setNodes} />}
-        {activeView === 'network' && <NetworkView />}
-        {activeView === 'identity' && <IdentityView />}
-        {activeView === 'security' && <SecurityView />}
-      </main>
-      <ToastHost toasts={toasts} onClose={(id) => setToasts((current) => current.filter((item) => item.id !== id))} />
+      {(!currentUser || authLoading) ? (
+        <AuthGate
+          error={authError}
+          loading={authLoading}
+          onLogin={async (payload) => {
+            const result = await loginUser(payload);
+            setAuthToken(result.token);
+            setCurrentUser(result.user);
+          }}
+          onRegister={async (payload) => {
+            const result = await registerUser(payload);
+            setAuthToken(result.token);
+            setCurrentUser(result.user);
+          }}
+        />
+      ) : (
+        <>
+          <ProductNav
+            activeView={activeView}
+            setActiveView={setActiveView}
+            user={currentUser}
+            onLogout={async () => {
+              try {
+                await logoutUser();
+              } catch {
+                // Local logout is enough if the server-side session is already gone.
+              }
+              setAuthToken('');
+              setCurrentUser(null);
+            }}
+          />
+          <main className="main">
+            {activeView === 'resources' && (
+              <ResourceWorkspace
+                activeNode={activeNode}
+                error={remoteError}
+                loading={remoteLoading}
+                nodes={nodes}
+                notify={notify}
+                transferManager={transferManager}
+                onNodesChange={setNodes}
+                onContainerRouteChange={(containerId) => {
+                  const nextContainerId = containerId || '';
+                  setRouteContainerId(nextContainerId);
+                  updateRouteState({ view: 'resources', resourceView, nodeId: activeNode?.id, containerId: nextContainerId });
+                }}
+                onContainerSnapshot={(container) => setRemoteResources((current) => {
+                  const index = current.findIndex((item) => item.id === container.id || item.name === container.name);
+                  const mergedContainer = keepPreviousContainerStats(container, index >= 0 ? current[index] : null);
+                  const guard = { container: mergedContainer, expiresAt: Date.now() + containerStateGuardTtl };
+                  containerStateGuardRef.current.set(mergedContainer.id, guard);
+                  containerStateGuardRef.current.set(mergedContainer.name, guard);
+                  if (index < 0) return current.length > 0 ? [mergedContainer, ...current] : [mergedContainer];
+                  return current.map((item, itemIndex) => (itemIndex === index ? mergedContainer : item));
+                })}
+                onRetry={() => {
+                  setReloadKey((value) => value + 1);
+                  if (resourceView === 'vm') notify({ title: '已重新读取虚拟机', message: activeNode?.name });
+                }}
+                onResourceViewChange={setResourceView}
+                resourceView={resourceView}
+                resources={remoteResources}
+                routeContainerId={routeContainerId}
+              />
+            )}
+            {activeView === 'cloud' && <CloudDriveView notify={notify} transferManager={transferManager} />}
+            {activeView === 'network' && <NetworkView />}
+            {activeView === 'identity' && <IdentityView currentUser={currentUser} />}
+            {activeView === 'security' && <SecurityView />}
+          </main>
+          <TransferDock transferManager={transferManager} />
+          <ToastHost toasts={toasts} onClose={(id) => setToasts((current) => current.filter((item) => item.id !== id))} />
+        </>
+      )}
     </div>
+  );
+}
+
+function useTransferManager(notify) {
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [downloadProgress, setDownloadProgress] = useState(null);
+  const uploadAbortRef = useRef(null);
+  const localUploadTaskRef = useRef(null);
+  const downloadAbortRef = useRef(null);
+  const downloadIdRef = useRef('');
+  const downloadTaskRef = useRef(null);
+  const downloadPausedRef = useRef(false);
+  const downloadCancellingRef = useRef(false);
+  const resumeDownloadWaitersRef = useRef(new Set());
+  const resetDownloadSpeedRef = useRef(null);
+  const uploadQueueRef = useRef(Promise.resolve());
+  const activeUploadIdsRef = useRef(new Set());
+  const localDownloaderInstallerRequestedRef = useRef(false);
+  const restoredLocalTransfersRef = useRef(new Set());
+
+  useEffect(() => {
+    const cleanupBeforeUnload = () => {
+      const groups = new Map();
+      activeUploadIdsRef.current.forEach((item) => {
+        if (!item?.uploadId || !item?.node?.id || !item?.containerId) return;
+        const key = `${item.node.id}:${item.containerId}`;
+        if (!groups.has(key)) groups.set(key, { node: item.node, containerId: item.containerId, uploadIds: [] });
+        groups.get(key).uploadIds.push(item.uploadId);
+      });
+      groups.forEach((group) => beaconCleanupContainerUploads(group.node, group.containerId, group.uploadIds));
+    };
+    window.addEventListener('beforeunload', cleanupBeforeUnload);
+    return () => window.removeEventListener('beforeunload', cleanupBeforeUnload);
+  }, []);
+
+  const rememberUploadId = (node, containerId, uploadId) => {
+    const item = { node, containerId, uploadId };
+    activeUploadIdsRef.current.add(item);
+    return item;
+  };
+
+  const forgetUploadIds = (items) => {
+    items.forEach((item) => activeUploadIdsRef.current.delete(item));
+  };
+
+  const formatDownloadSizeProgress = (downloaded, total) => {
+    const downloadedBytes = Math.max(0, Number(downloaded || 0));
+    const totalBytes = Math.max(0, Number(total || 0));
+    if (!totalBytes) return formatBytes(downloadedBytes);
+    return `${formatBytes(Math.min(downloadedBytes, totalBytes))} / ${formatBytes(totalBytes)}`;
+  };
+
+  const localTransferStateText = (status, fallback = '0 B/s') => {
+    if (status.state === 'paused') return '已暂停';
+    if (status.state === 'queued') return '排队中';
+    if (status.state === 'done') return '已完成';
+    if (status.state === 'cancelled') return '已取消';
+    if (status.state === 'error') return '失败';
+    return fallback;
+  };
+
+  const isFinalLocalTransferState = (state) => state === 'done' || state === 'cancelled' || state === 'error';
+
+  const renderLocalDownloadStatus = (status) => {
+    if (isFinalLocalTransferState(status.state)) {
+      setDownloadProgress(null);
+      return;
+    }
+    const active = Number(status.activeThreads || 0);
+    const total = Number(status.threads || 0);
+    const speed = Number(status.speed || 0);
+    const state = localTransferStateText(status, formatRate(speed));
+    const sizeText = formatDownloadSizeProgress(status.downloaded, status.size);
+    setDownloadProgress({
+      current: status.name || '文件',
+      percent: Number(status.percent || 0),
+      paused: status.state === 'paused',
+      cancellable: status.state !== 'done' && status.state !== 'cancelled',
+      speed: `${state} · ${active}/${total} 线程 · ${sizeText}`,
+    });
+  };
+
+  const renderLocalUploadStatus = (status) => {
+    if (isFinalLocalTransferState(status.state)) {
+      setUploadProgress(null);
+      return;
+    }
+    const active = Number(status.activeThreads || 0);
+    const total = Number(status.threads || 0);
+    const speed = Number(status.speed || 0);
+    const state = localTransferStateText(status, formatRate(speed));
+    const sizeText = formatDownloadSizeProgress(status.downloaded, status.size);
+    setUploadProgress({
+      current: status.name || '文件',
+      index: Number(status.index || 0),
+      total: Number(status.total || 0),
+      percent: Number(status.percent || 0),
+      speed: `${state} · ${active}/${total} 上传通道 · ${sizeText}`,
+    });
+  };
+
+  const watchRestoredLocalDownload = (taskId) => {
+    if (!taskId || restoredLocalTransfersRef.current.has(`download:${taskId}`)) return;
+    restoredLocalTransfersRef.current.add(`download:${taskId}`);
+    downloadTaskRef.current = { ...(downloadTaskRef.current || {}), localDownloadId: taskId, restored: true };
+    downloadPausedRef.current = false;
+    downloadCancellingRef.current = false;
+    (async () => {
+      try {
+        while (downloadTaskRef.current?.localDownloadId === taskId) {
+          const status = await fetchLocalDownloadStatus(taskId);
+          if (status.state === 'done') {
+            notify?.({
+              title: '本地下载完成',
+              message: status.name || '文件',
+              duration: 9000,
+              action: {
+                label: '打开所在位置',
+                onClick: () => revealLocalDownload(taskId).catch((error) => notify?.({
+                  type: 'error',
+                  title: '打开位置失败',
+                  message: friendlyError(error.message),
+                  duration: 4200,
+                })),
+              },
+            });
+            break;
+          }
+          if (status.state === 'cancelled') break;
+          if (status.state === 'error') throw new Error(status.error || '本地下载失败');
+          renderLocalDownloadStatus(status);
+          await new Promise((resolve) => setTimeout(resolve, 420));
+        }
+      } catch (error) {
+        notify?.({ type: 'error', title: '下载同步失败', message: friendlyError(error.message), duration: 4200 });
+      } finally {
+        if (downloadTaskRef.current?.localDownloadId === taskId) downloadTaskRef.current = null;
+        downloadPausedRef.current = false;
+        downloadCancellingRef.current = false;
+        setDownloadProgress(null);
+      }
+    })();
+  };
+
+  const watchRestoredLocalUpload = (taskId) => {
+    if (!taskId || restoredLocalTransfersRef.current.has(`upload:${taskId}`)) return;
+    restoredLocalTransfersRef.current.add(`upload:${taskId}`);
+    localUploadTaskRef.current = taskId;
+    (async () => {
+      try {
+        while (localUploadTaskRef.current === taskId) {
+          const status = await fetchLocalUploadStatus(taskId);
+          if (status.state === 'done') {
+            notify?.({ title: '上传成功', message: status.total > 1 ? `${status.total} 个文件` : status.name || '文件' });
+            break;
+          }
+          if (status.state === 'cancelled') break;
+          if (status.state === 'error') throw new Error(status.error || '本地上传失败');
+          renderLocalUploadStatus(status);
+          await new Promise((resolve) => setTimeout(resolve, 420));
+        }
+      } catch (error) {
+        notify?.({ type: 'error', title: '上传同步失败', message: friendlyError(error.message), duration: 4200 });
+      } finally {
+        if (localUploadTaskRef.current === taskId) localUploadTaskRef.current = null;
+        setUploadProgress(null);
+      }
+    })();
+  };
+
+  useEffect(() => {
+    let stopped = false;
+    const activeStates = new Set(['downloading', 'uploading', 'queued', 'paused']);
+    const syncLocalTransfers = async () => {
+      try {
+        const transfers = await fetchLocalTransfers();
+        if (stopped) return;
+        const download = (transfers.downloads || []).find((item) => activeStates.has(item.state));
+        const upload = (transfers.uploads || []).find((item) => activeStates.has(item.state));
+        if (download && !downloadTaskRef.current) {
+          renderLocalDownloadStatus(download);
+          watchRestoredLocalDownload(download.id);
+        }
+        if (upload && !localUploadTaskRef.current && !uploadAbortRef.current) {
+          renderLocalUploadStatus(upload);
+          watchRestoredLocalUpload(upload.id);
+        }
+      } catch {
+        // 本地进程没有启动时保持安静，发起传输时会继续提示安装/启动。
+      }
+    };
+    syncLocalTransfers();
+    const timer = window.setInterval(syncLocalTransfers, 2500);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const startUpload = ({ node, container, files, targetPath, onComplete }) => {
+    const uploadItems = Array.from(files || []);
+    if (!node?.id || !container?.id || !uploadItems.length) return Promise.resolve();
+    if (uploadAbortRef.current) {
+      notify?.({ title: '已加入上传队列', message: uploadItems.length > 1 ? `${uploadItems.length} 个文件` : uploadItems[0].name });
+    }
+    const task = uploadQueueRef.current
+      .catch(() => undefined)
+      .then(() => runUploadBatch({ node, container, files: uploadItems, targetPath, onComplete }));
+    uploadQueueRef.current = task.catch(() => undefined);
+    return task;
+  };
+
+  const startCloudUpload = ({ driveId, parentId = 'root', files, onComplete }) => {
+    const uploadItems = Array.from(files || []);
+    if (!driveId || !uploadItems.length) return Promise.resolve();
+    if (uploadAbortRef.current) {
+      notify?.({ title: '已加入上传队列', message: uploadItems.length > 1 ? `${uploadItems.length} 个文件` : uploadItems[0].name });
+    }
+    const task = uploadQueueRef.current
+      .catch(() => undefined)
+      .then(() => runCloudUploadBatch({ driveId, parentId, files: uploadItems, onComplete }));
+    uploadQueueRef.current = task.catch(() => undefined);
+    return task;
+  };
+
+  const startLocalCloudUpload = ({ driveId, parentId = 'root', onSelected, onComplete, onFailed }) => {
+    if (!driveId) return Promise.resolve();
+    const task = uploadQueueRef.current
+      .catch(() => undefined)
+      .then(() => runLocalCloudUpload({ driveId, parentId, onSelected, onComplete, onFailed }));
+    uploadQueueRef.current = task.catch(() => undefined);
+    return task;
+  };
+
+  const runLocalCloudUpload = async ({ driveId, parentId, onSelected, onComplete, onFailed }) => {
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+    let uploadFiles = [];
+    let selectedFiles = [];
+    setUploadProgress({ current: '选择文件', index: 0, total: 0, percent: 0, speed: '请选择要上传的文件' });
+    try {
+      await ensureLocalDownloader(controller.signal);
+      const selected = await selectLocalUploadFiles();
+      const files = Array.isArray(selected?.files) ? selected.files : [];
+      if (!files.length) throw new DOMException('Upload cancelled', 'AbortError');
+      selectedFiles = files;
+      const totalBytes = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+      await onSelected?.({ files });
+      setUploadProgress({ current: files[0]?.name || '文件', index: 0, total: files.length, percent: 0, speed: '创建上传会话' });
+      for (const file of files) {
+        if (controller.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+        const session = await createCloudUploadSession(driveId, {
+          parentId,
+          name: file.name,
+          size: Number(file.size || 0),
+          conflictBehavior: 'replace',
+        });
+        if (!session.uploadUrl) throw new Error(`${file.name} 没有返回上传地址`);
+        uploadFiles.push({ ...file, uploadUrl: session.uploadUrl, parentId });
+      }
+      const threads = readUploadThreads() || 32;
+      const task = await startLocalUpload({ files: uploadFiles, threads });
+      localUploadTaskRef.current = task.id;
+      restoredLocalTransfersRef.current.add(`upload:${task.id}`);
+      const renderStatus = (status) => renderLocalUploadStatus({ ...status, size: status.size || totalBytes, total: status.total || files.length, threads: status.threads || threads });
+      renderStatus(task);
+      while (true) {
+        if (controller.signal.aborted) {
+          await cancelLocalUpload(task.id).catch(() => undefined);
+          throw new DOMException('Upload cancelled', 'AbortError');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 360));
+        const status = await fetchLocalUploadStatus(task.id);
+        renderStatus(status);
+        if (status.state === 'done') {
+          await onComplete?.({ completedFiles: status.completedFiles || [], files: uploadFiles });
+          break;
+        }
+        if (status.state === 'cancelled') throw new DOMException('Upload cancelled', 'AbortError');
+        if (status.state === 'error') throw new Error(status.error || '本地上传失败');
+      }
+      notify?.({ title: '上传成功', message: files.length > 1 ? `${files.length} 个文件` : files[0].name });
+    } catch (uploadError) {
+      await onFailed?.({ files: selectedFiles.length ? selectedFiles : uploadFiles, error: uploadError });
+      if (uploadError.name === 'AbortError') {
+        notify?.({ title: '已取消上传', message: '本地上传已停止' });
+      } else {
+        notify?.({ type: 'error', title: '上传失败', message: friendlyError(uploadError.message), duration: 4600 });
+      }
+    } finally {
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
+      localUploadTaskRef.current = null;
+      setUploadProgress(null);
+    }
+  };
+
+  const runCloudUploadBatch = async ({ driveId, parentId, files, onComplete }) => {
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+    let uploadedBytes = 0;
+    const startedAt = performance.now();
+    try {
+      setUploadProgress({ current: files[0]?.name || '文件', index: 0, total: files.length, percent: 0, speed: '0 B/s · OneDrive 直连' });
+      const fileWorkerCount = Math.min(files.length, totalBytes > 512 * 1024 * 1024 ? 2 : 3);
+      let nextFile = 0;
+      const uploadOneFile = async () => {
+        while (nextFile < files.length) {
+          if (controller.signal.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+          const index = nextFile;
+          nextFile += 1;
+          const file = files[index];
+          setUploadProgress((current) => ({ ...(current || {}), current: file.name, index: index + 1, total: files.length }));
+          await uploadCloudFileInChunks(driveId, parentId, file, controller.signal, (delta) => {
+            uploadedBytes += delta;
+            const percent = totalBytes ? Math.min(99, Math.round((uploadedBytes / totalBytes) * 100)) : 100;
+            const elapsedSeconds = Math.max(0.3, (performance.now() - startedAt) / 1000);
+            setUploadProgress((current) => ({ ...(current || {}), percent, speed: `${formatBytes(uploadedBytes / elapsedSeconds)}/s · ${fileWorkerCount} 文件并发` }));
+          });
+        }
+      };
+      await Promise.all(Array.from({ length: fileWorkerCount }, uploadOneFile));
+      setUploadProgress((current) => ({ ...(current || {}), percent: 100 }));
+      await onComplete?.();
+      await new Promise((resolve) => setTimeout(resolve, 420));
+      notify?.({ title: '上传成功', message: files.length > 1 ? `${files.length} 个文件` : files[0].name });
+    } catch (uploadError) {
+      if (uploadError.name === 'AbortError') {
+        notify?.({ title: '已取消上传', message: files.length > 1 ? `${files.length} 个文件` : files[0].name });
+      } else {
+        notify?.({ type: 'error', title: '上传失败', message: friendlyError(uploadError.message), duration: 4600 });
+      }
+    } finally {
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
+      setUploadProgress(null);
+    }
+  };
+
+  const uploadCloudFileInChunks = async (driveId, parentId, file, signal, onProgress) => {
+    const session = await createCloudUploadSession(driveId, {
+      parentId,
+      name: file.name,
+      size: file.size,
+      conflictBehavior: 'replace',
+    });
+    const uploadUrl = session.uploadUrl;
+    if (!uploadUrl) throw new Error('OneDrive 没有返回上传地址');
+    const chunkSize = 10 * 1024 * 1024;
+    if (!file.size) {
+      await putOneDriveChunk(uploadUrl, file.slice(0, 0), 0, -1, 0, signal);
+      return;
+    }
+    for (let start = 0; start < file.size; start += chunkSize) {
+      if (signal.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+      const end = Math.min(file.size, start + chunkSize) - 1;
+      await putOneDriveChunk(uploadUrl, file.slice(start, end + 1), start, end, file.size, signal);
+      onProgress(end - start + 1);
+    }
+  };
+
+  const putOneDriveChunk = async (uploadUrl, chunk, start, end, size, signal) => {
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (signal.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+      try {
+        const response = await fetch(uploadUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Range': `bytes ${start}-${end}/${size}`,
+          },
+          body: chunk,
+          signal,
+        });
+        if (response.status === 202 || response.status === 200 || response.status === 201) return;
+        const text = await response.text().catch(() => '');
+        throw new Error(text || response.statusText || `OneDrive 上传失败: ${response.status}`);
+      } catch (error) {
+        lastError = error;
+        if (attempt === 2 || signal.aborted) break;
+        await new Promise((resolve) => setTimeout(resolve, 320 * (attempt + 1)));
+      }
+    }
+    throw lastError;
+  };
+
+  const runUploadBatch = async ({ node, container, files, targetPath, onComplete }) => {
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+    let uploadedBytes = 0;
+    const startedAt = performance.now();
+    const batchUploadItems = new Set();
+    const cleanupBatchUploads = async () => {
+      const uploadItems = Array.from(batchUploadItems);
+      const uploadIds = uploadItems.map((item) => item.uploadId);
+      if (!uploadIds.length) return;
+      forgetUploadIds(uploadItems);
+      try {
+        await cleanupContainerUploads(node, container.id, uploadIds);
+      } catch {
+        beaconCleanupContainerUploads(node, container.id, uploadIds);
+      }
+    };
+    try {
+      const fileWorkerCount = Math.min(totalBytes > 512 * 1024 * 1024 ? 2 : 4, files.length);
+      const chunkWorkerCap = Math.max(2, Math.floor(16 / fileWorkerCount));
+      const uploadThreadCount = files.slice(0, fileWorkerCount).reduce((sum, file) => {
+        const plan = getUploadPlan(file.size, chunkWorkerCap);
+        return sum + plan.workerCount;
+      }, 0);
+      const uploadThreadLabel = `${Math.max(1, uploadThreadCount)} 线程`;
+      setUploadProgress({ current: files[0]?.name || '文件', index: 0, total: files.length, percent: 0, speed: `0 B/s · ${uploadThreadLabel}` });
+      const workers = Array.from({ length: fileWorkerCount }, async (_, workerIndex) => {
+        for (let index = workerIndex; index < files.length; index += fileWorkerCount) {
+          if (controller.signal.aborted) return;
+          const file = files[index];
+          setUploadProgress((current) => ({ ...(current || {}), current: file.name, index: index + 1, total: files.length }));
+          await uploadFileInChunks(node, container.id, file, targetPath, controller.signal, (uploadId) => {
+            batchUploadItems.add(rememberUploadId(node, container.id, uploadId));
+          }, (delta) => {
+            uploadedBytes += delta;
+            const percent = totalBytes ? Math.min(99, Math.round((uploadedBytes / totalBytes) * 100)) : 100;
+            const elapsedSeconds = Math.max(0.3, (performance.now() - startedAt) / 1000);
+            setUploadProgress((current) => ({ ...(current || {}), percent, speed: `${formatBytes(uploadedBytes / elapsedSeconds)}/s · ${uploadThreadLabel}` }));
+          }, chunkWorkerCap);
+        }
+      });
+      await Promise.all(workers);
+      setUploadProgress((current) => ({ ...(current || {}), percent: 100 }));
+      await onComplete?.(targetPath);
+      await new Promise((resolve) => setTimeout(resolve, 420));
+      notify?.({ title: '上传成功', message: files.length > 1 ? `${files.length} 个文件` : files[0].name });
+    } catch (uploadError) {
+      await cleanupBatchUploads();
+      if (uploadError.name === 'AbortError') {
+        notify?.({ title: '已取消上传', message: files.length > 1 ? `${files.length} 个文件` : files[0].name });
+      } else {
+        notify?.({ type: 'error', title: '上传失败', message: friendlyError(uploadError.message), duration: 4600 });
+      }
+    } finally {
+      forgetUploadIds(Array.from(batchUploadItems));
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
+      setUploadProgress(null);
+    }
+  };
+
+  const uploadFileInChunks = async (node, containerId, file, targetPath, signal, onUploadId, onProgress, workerCap = 8) => {
+    const { chunkSize, workerCount } = getUploadPlan(file.size, workerCap);
+    const uploadId = `${Date.now()}-${Math.random().toString(16).slice(2)}-${file.name}`;
+    onUploadId(uploadId);
+    const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
+    let nextChunk = 0;
+    const uploadChunkWithRetry = async (payload) => {
+      let lastError;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (signal.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+        try {
+          return await uploadContainerFileChunkBinary(node, containerId, payload);
+        } catch (error) {
+          lastError = error;
+          if (attempt === 2 || signal.aborted) break;
+          await new Promise((resolve) => setTimeout(resolve, 260 * (attempt + 1)));
+        }
+      }
+      throw lastError;
+    };
+    const uploadChunk = async () => {
+      while (nextChunk < totalChunks) {
+        if (signal.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+        const chunkIndex = nextChunk;
+        nextChunk += 1;
+        const start = chunkIndex * chunkSize;
+        const end = Math.min(file.size, start + chunkSize);
+        const chunk = file.slice(start, end);
+        const result = await uploadChunkWithRetry({
+          uploadId,
+          path: targetPath,
+          name: file.name,
+          chunkIndex,
+          totalChunks,
+          chunkSize,
+          chunk,
+          size: file.size,
+          signal,
+        });
+        if (result?.complete) completed = true;
+        onProgress(end - start);
+      }
+    };
+    let completed = false;
+    await Promise.all(Array.from({ length: workerCount }, uploadChunk));
+    if (!completed) throw new Error('上传未完成，请重试');
+  };
+
+  const cancelUpload = () => {
+    if (localUploadTaskRef.current) {
+      cancelLocalUpload(localUploadTaskRef.current).catch(() => undefined);
+      localUploadTaskRef.current = null;
+    }
+    uploadAbortRef.current?.abort();
+  };
+
+  const startDownload = async ({ node, container, item, filePath }) => {
+    if (!node?.id || !container?.id || !item) return;
+    if (downloadTaskRef.current) {
+      notify?.({ title: '已有下载任务', message: '请等待当前下载完成或取消' });
+      return;
+    }
+    const controller = new AbortController();
+    const downloadId = `${Date.now()}-${Math.random().toString(16).slice(2)}-${item.name}`;
+    downloadTaskRef.current = { node, nodeId: node.id, containerId: container.id, downloadId };
+    downloadAbortRef.current = controller;
+    downloadIdRef.current = downloadId;
+    downloadPausedRef.current = false;
+    downloadCancellingRef.current = false;
+    setDownloadProgress({
+      nodeId: node.id,
+      containerId: container.id,
+      current: item.name || '文件',
+      percent: 0,
+      speed: '准备下载',
+      paused: false,
+      cancellable: true,
+    });
+    try {
+      const info = await fetchContainerFileDownloadInfo(node, container.id, filePath, downloadId, controller.signal);
+      await downloadFileInRanges(node, container.id, filePath, info.name || item.name, info.size || Number(item.size || 0), controller.signal, downloadId);
+      notify?.({ title: '下载完成', message: info.name || item.name });
+    } catch (downloadError) {
+      if (downloadError.name === 'AbortError') {
+        notify?.({ title: '已取消下载', message: item.name });
+      } else if (downloadError.name === 'NotAllowedError' || /picker already active/i.test(downloadError.message || '')) {
+        notify?.({ type: 'error', title: '下载失败', message: '保存窗口已打开，请先处理当前保存窗口后再下载。', duration: 4600 });
+      } else {
+        notify?.({ type: 'error', title: '下载失败', message: friendlyError(downloadError.message), duration: 4600 });
+      }
+    } finally {
+      const isCurrentDownload = downloadAbortRef.current === controller
+        || downloadIdRef.current === downloadId
+        || downloadTaskRef.current?.downloadId === downloadId;
+      if (isCurrentDownload) {
+        if (downloadAbortRef.current === controller) downloadAbortRef.current = null;
+        if (downloadIdRef.current === downloadId) downloadIdRef.current = '';
+        if (downloadTaskRef.current?.downloadId === downloadId) downloadTaskRef.current = null;
+        downloadPausedRef.current = false;
+        downloadCancellingRef.current = false;
+        resumeDownloadWaitersRef.current.forEach((resume) => resume());
+        resumeDownloadWaitersRef.current.clear();
+        resetDownloadSpeedRef.current = null;
+        setDownloadProgress(null);
+      }
+    }
+  };
+
+  const waitForLocalCloudDownload = async ({ info, itemName, signal }) => {
+    const threads = readDownloadThreads() || 32;
+    const urls = info.urls || info.url;
+    setDownloadProgress((current) => current ? {
+      ...current,
+      speed: '请选择保存位置',
+    } : current);
+    const task = await startLocalDownload({
+      urls: Array.isArray(urls) ? urls : [urls],
+      name: info.name || itemName || 'download',
+      size: Number(info.size || 0),
+      threads,
+      promptSavePath: true,
+    });
+    downloadTaskRef.current = { ...(downloadTaskRef.current || {}), localDownloadId: task.id };
+    restoredLocalTransfersRef.current.add(`download:${task.id}`);
+    const renderStatus = (status) => renderLocalDownloadStatus({ ...status, name: status.name || info.name || itemName || '文件', size: status.size || info.size, threads: status.threads || threads });
+    renderStatus(task);
+    while (true) {
+      if (signal.aborted) {
+        await cancelLocalDownload(task.id).catch(() => undefined);
+        throw new DOMException('Download cancelled', 'AbortError');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 320));
+      const status = await fetchLocalDownloadStatus(task.id);
+      if (status.state === 'done') return status;
+      if (status.state === 'cancelled') throw new DOMException('Download cancelled', 'AbortError');
+      if (status.state === 'error') throw new Error(status.error || '本地下载失败');
+      renderStatus(status);
+    }
+  };
+
+  const downloadLocalDownloaderInstaller = () => {
+    if (localDownloaderInstallerRequestedRef.current) return;
+    localDownloaderInstallerRequestedRef.current = true;
+    window.location.href = `${LOCAL_DOWNLOADER_INSTALLER_PATH}?v=${encodeURIComponent(LOCAL_DOWNLOADER_VERSION)}`;
+  };
+
+  const launchInstalledLocalDownloader = () => {
+    const frame = document.createElement('iframe');
+    frame.style.display = 'none';
+    frame.src = `beiming-downloader://start?t=${Date.now()}`;
+    document.body.appendChild(frame);
+    window.setTimeout(() => frame.remove(), 1500);
+  };
+
+  const ensureLocalDownloader = async (signal) => {
+    try {
+      await pingLocalDownloader({ signal });
+      return;
+    } catch (error) {
+      if (signal.aborted || error.name === 'AbortError') throw error;
+    }
+    launchInstalledLocalDownloader();
+    setDownloadProgress((current) => current ? {
+      ...current,
+      speed: '正在唤起本地下载进程',
+    } : current);
+    const launchStartedAt = Date.now();
+    while (Date.now() - launchStartedAt < 8000) {
+      if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      try {
+        await pingLocalDownloader({ signal });
+        notify?.({ title: '本地下载进程已连接', message: '开始调用本地多线程下载' });
+        return;
+      } catch (error) {
+        if (signal.aborted || error.name === 'AbortError') throw error;
+      }
+    }
+    downloadLocalDownloaderInstaller();
+    notify?.({
+      title: '已自动下载本地下载进程',
+      message: '请运行 beiming-local-downloader.exe，运行后下载会自动继续',
+      duration: 9000,
+    });
+    setDownloadProgress((current) => current ? {
+      ...current,
+      speed: '已下载本地进程，请运行后自动继续',
+    } : current);
+    const downloadStartedAt = Date.now();
+    while (Date.now() - downloadStartedAt < 180000) {
+      if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      try {
+        await pingLocalDownloader({ signal });
+        notify?.({ title: '本地下载进程已连接', message: '开始调用本地多线程下载' });
+        return;
+      } catch (error) {
+        if (signal.aborted || error.name === 'AbortError') throw error;
+      }
+    }
+    throw new Error('本地下载进程未启动，请运行刚刚下载的 beiming-local-downloader.exe 后重试');
+  };
+
+  const startCloudDownload = async ({ driveId, item }) => {
+    if (!driveId || !item) return;
+    if (downloadTaskRef.current) {
+      notify?.({ title: '已有下载任务', message: '请等待当前下载完成或取消' });
+      return;
+    }
+    const controller = new AbortController();
+    const downloadId = `${Date.now()}-${Math.random().toString(16).slice(2)}-${item.name}`;
+    downloadTaskRef.current = { cloud: true, downloadId };
+    downloadAbortRef.current = controller;
+    downloadIdRef.current = downloadId;
+    downloadPausedRef.current = false;
+    downloadCancellingRef.current = false;
+    setDownloadProgress({
+      current: item.name || '文件',
+      percent: 0,
+      speed: '连接本地下载进程',
+      paused: false,
+      cancellable: true,
+    });
+    try {
+      const info = await fetchCloudDownloadInfo(driveId, item.id);
+      await ensureLocalDownloader(controller.signal);
+      const localStatus = await waitForLocalCloudDownload({ info, itemName: item.name, signal: controller.signal });
+      notify?.({
+        title: '本地下载完成',
+        message: localStatus.name || info.name || item.name,
+        duration: 9000,
+        action: localStatus.id ? {
+          label: '打开所在位置',
+          onClick: () => revealLocalDownload(localStatus.id).catch((error) => notify?.({
+            type: 'error',
+            title: '打开位置失败',
+            message: friendlyError(error.message),
+            duration: 4200,
+          })),
+        } : null,
+      });
+    } catch (downloadError) {
+      if (downloadError.name === 'AbortError') {
+        notify?.({ title: '已取消下载', message: item.name });
+      } else {
+        notify?.({ type: 'error', title: '下载失败', message: friendlyError(downloadError.message), duration: 4600 });
+      }
+    } finally {
+      const isCurrentDownload = downloadAbortRef.current === controller
+        || downloadIdRef.current === downloadId
+        || downloadTaskRef.current?.downloadId === downloadId;
+      if (isCurrentDownload) {
+        if (downloadAbortRef.current === controller) downloadAbortRef.current = null;
+        if (downloadIdRef.current === downloadId) downloadIdRef.current = '';
+        if (downloadTaskRef.current?.downloadId === downloadId) downloadTaskRef.current = null;
+        downloadPausedRef.current = false;
+        downloadCancellingRef.current = false;
+        resumeDownloadWaitersRef.current.forEach((resume) => resume());
+        resumeDownloadWaitersRef.current.clear();
+        resetDownloadSpeedRef.current = null;
+        setDownloadProgress(null);
+      }
+    }
+  };
+
+  const cancelDownload = () => {
+    const task = downloadTaskRef.current;
+    const downloadId = task?.downloadId || downloadIdRef.current;
+    if (!task && !downloadAbortRef.current) return;
+    const controller = downloadAbortRef.current;
+    downloadCancellingRef.current = true;
+    downloadPausedRef.current = false;
+    resumeDownloadWaitersRef.current.forEach((resume) => resume());
+    resumeDownloadWaitersRef.current.clear();
+    downloadTaskRef.current = null;
+    downloadAbortRef.current = null;
+    downloadIdRef.current = '';
+    resetDownloadSpeedRef.current = null;
+    controller?.abort();
+    setDownloadProgress(null);
+    if (task?.localDownloadId) {
+      cancelLocalDownload(task.localDownloadId).catch(() => undefined);
+    }
+    if (downloadId && task?.node && task?.containerId) {
+      cancelContainerFileDownload(task.node, task.containerId, downloadId).catch(() => undefined);
+    }
+  };
+
+  const toggleDownloadPause = () => {
+    if (!downloadTaskRef.current || downloadAbortRef.current?.signal.aborted) return;
+    downloadPausedRef.current = !downloadPausedRef.current;
+    const paused = downloadPausedRef.current;
+    setDownloadProgress((current) => current ? { ...current, paused, speed: paused ? '已暂停' : '继续下载中' } : current);
+    resetDownloadSpeedRef.current?.(paused ? 'pause' : 'resume');
+    const localDownloadId = downloadTaskRef.current?.localDownloadId;
+    if (localDownloadId) {
+      (paused ? pauseLocalDownload(localDownloadId) : resumeLocalDownload(localDownloadId)).catch((error) => {
+        notify?.({ type: 'error', title: paused ? '暂停失败' : '继续失败', message: friendlyError(error.message), duration: 3600 });
+      });
+    }
+    if (!paused) {
+      resumeDownloadWaitersRef.current.forEach((resume) => resume());
+      resumeDownloadWaitersRef.current.clear();
+    }
+  };
+
+  const waitForDownloadResume = async (signal) => {
+    if (!downloadPausedRef.current) return;
+    await new Promise((resolve, reject) => {
+      const resume = () => {
+        signal.removeEventListener('abort', abort);
+        resumeDownloadWaitersRef.current.delete(resume);
+        resolve();
+      };
+      const abort = () => {
+        resumeDownloadWaitersRef.current.delete(resume);
+        reject(new DOMException('Download cancelled', 'AbortError'));
+      };
+      resumeDownloadWaitersRef.current.add(resume);
+      signal.addEventListener('abort', abort, { once: true });
+    });
+  };
+
+  const createDownloadProgressReporter = ({ fileSize, labelRef, baseProgress = {} }) => {
+    let downloadedBytes = 0;
+    let displayRate = 0;
+    let warmupUntil = 0;
+    let lastVisiblePercent = -1;
+    let lastVisibleSpeed = '';
+    let lastVisibleRate = 0;
+    let lastVisibleLabel = '';
+    let lastSpeedEmitAt = 0;
+    let rateSamples = [{ time: performance.now(), bytes: 0 }];
+    const speedWindowMs = 1200;
+    const emit = (force = false) => {
+      if (downloadCancellingRef.current) return;
+      const now = performance.now();
+      rateSamples.push({ time: now, bytes: downloadedBytes });
+      while (rateSamples.length > 2 && now - rateSamples[0].time > speedWindowMs) rateSamples.shift();
+      const firstSample = rateSamples[0];
+      const elapsedSeconds = Math.max(0.001, (now - firstSample.time) / 1000);
+      const windowRate = Math.max(0, (downloadedBytes - firstSample.bytes) / elapsedSeconds);
+      if (displayRate <= 0) displayRate = windowRate;
+      else displayRate = displayRate * 0.55 + windowRate * 0.45;
+      if (windowRate <= 1) displayRate *= 0.82;
+      const percent = fileSize ? Math.min(force ? 100 : 99, Math.round((downloadedBytes / fileSize) * 100)) : 100;
+      const label = labelRef?.current || '下载';
+      const sizeText = formatDownloadSizeProgress(downloadedBytes, fileSize);
+      const rate = Math.max(0, Math.round(displayRate));
+      const rateDelta = Math.abs(rate - lastVisibleRate);
+      const labelChanged = label !== lastVisibleLabel;
+      const inWarmup = now < warmupUntil;
+      const shouldRefreshSpeed = force
+        || !lastVisibleSpeed
+        || labelChanged
+        || inWarmup
+        || rateDelta >= Math.max(24 * 1024, lastVisibleRate * 0.05)
+        || now - lastSpeedEmitAt >= 360;
+      const speed = shouldRefreshSpeed
+        ? (downloadedBytes <= 0 && !force ? `连接中 · ${label} · ${sizeText}` : inWarmup ? `恢复中 · ${label} · ${sizeText}` : `${formatRate(rate)} · ${label} · ${sizeText}`)
+        : lastVisibleSpeed;
+      const shouldCommit = force || percent !== lastVisiblePercent || speed !== lastVisibleSpeed;
+      if (shouldCommit) {
+        setDownloadProgress((current) => current ? { ...current, ...baseProgress, percent, speed } : current);
+        lastVisiblePercent = percent;
+        lastVisibleSpeed = speed;
+      }
+      if (shouldRefreshSpeed) {
+        lastVisibleRate = rate;
+        lastVisibleLabel = label;
+        lastSpeedEmitAt = now;
+      }
+    };
+    const timer = window.setInterval(() => emit(false), 180);
+    return {
+      add(delta) {
+        if (downloadCancellingRef.current) return;
+        const nextDelta = Math.max(0, Number(delta || 0));
+        if (!nextDelta) return;
+        if (downloadedBytes <= 0) {
+          const now = performance.now();
+          displayRate = 0;
+          rateSamples = [{ time: now, bytes: 0 }];
+          lastSpeedEmitAt = 0;
+        }
+        downloadedBytes += nextDelta;
+      },
+      reset(mode = '') {
+        const now = performance.now();
+        displayRate = 0;
+        rateSamples = [{ time: now, bytes: downloadedBytes }];
+        if (mode === 'resume') warmupUntil = now + 900;
+      },
+      finish() {
+        downloadedBytes = fileSize || downloadedBytes;
+        emit(true);
+      },
+      stop() {
+        window.clearInterval(timer);
+      },
+    };
+  };
+
+  const createOrderedFileWriter = (writable, signal) => {
+    let tail = Promise.resolve();
+    let pendingBytes = 0;
+    let firstError = null;
+    const waiters = new Set();
+    const notify = () => {
+      waiters.forEach((resolve) => resolve());
+      waiters.clear();
+    };
+    const waitForCapacity = async () => {
+      while (pendingBytes >= DOWNLOAD_WRITE_BUFFER_LIMIT) {
+        if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+        await new Promise((resolve) => waiters.add(resolve));
+      }
+    };
+    return {
+      async write(position, piece) {
+        if (firstError) throw firstError;
+        await waitForCapacity();
+        const data = piece instanceof Uint8Array ? piece : new Uint8Array(piece);
+        pendingBytes += data.byteLength;
+        const writeTask = tail.then(async () => {
+          try {
+            if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+            await writable.write({ type: 'write', position, data });
+          } catch (error) {
+            firstError = error;
+            throw error;
+          } finally {
+            pendingBytes -= data.byteLength;
+            notify();
+          }
+        });
+        tail = writeTask.catch(() => undefined);
+        if (pendingBytes >= DOWNLOAD_WRITE_BUFFER_LIMIT || firstError) await writeTask;
+      },
+      async close() {
+        await tail;
+        if (firstError) throw firstError;
+        await writable.close();
+      },
+      async abort() {
+        await writable.abort().catch(() => undefined);
+        notify();
+      },
+    };
+  };
+
+  const requireStreamingDownloadTarget = async (fileName, fileSize, progressPatch) => {
+    if (window.showSaveFilePicker) {
+      setDownloadProgress((current) => ({ ...(current || {}), ...progressPatch, current: fileName, percent: 0, speed: '等待选择保存位置', paused: false, cancellable: true }));
+      const fileHandle = await window.showSaveFilePicker({ suggestedName: fileName });
+      return fileHandle.createWritable();
+    }
+    if (fileSize > BROWSER_MEMORY_DOWNLOAD_LIMIT) {
+      throw new Error('当前浏览器不支持大文件流式保存，无法安全下载超过 256 MB 的文件');
+    }
+    return null;
+  };
+
+  const saveMemoryRangeParts = (parts, fileName) => {
+    parts.sort((left, right) => left.position - right.position);
+    saveBlobFile(new Blob(parts.map((part) => part.data)), fileName);
+  };
+
+  const downloadFileInRanges = async (node, containerId, filePath, fileName, fileSize, signal, downloadId) => {
+    const nodeId = node.id;
+    if (!fileSize) {
+      setDownloadProgress({ nodeId, containerId, current: fileName, percent: 100, speed: '0 B/s · 空文件', paused: false, cancellable: true });
+      saveBlobFile(new Blob([]), fileName);
+      return;
+    }
+    const plan = getDownloadPlan(fileSize);
+    const workerCount = Math.max(1, Math.min(readDownloadThreads() || plan.workerCount, Math.ceil(fileSize / 512 / 1024)));
+    let writable = null;
+    let writer = null;
+    const memoryParts = [];
+    writable = await requireStreamingDownloadTarget(fileName, fileSize, { nodeId, containerId });
+    if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+    const labelRef = { current: `0/${workerCount} 线程连接中` };
+    const updateActiveLabel = (activeCount, totalCount = workerCount) => {
+      labelRef.current = `${activeCount}/${totalCount} 线程${activeCount > 0 ? '接收中' : '连接中'}`;
+    };
+    setDownloadProgress({ nodeId, containerId, current: fileName, percent: 0, speed: `0 B/s · ${labelRef.current}`, paused: false, cancellable: true });
+    const reporter = createDownloadProgressReporter({ fileSize, labelRef, baseProgress: { nodeId, containerId } });
+    if (writable) writer = createOrderedFileWriter(writable, signal);
+    resetDownloadSpeedRef.current = reporter.reset;
+    try {
+      await runAdaptiveRangeDownload({
+        fileSize,
+        workerCount,
+        signal,
+        waitForResume: waitForDownloadResume,
+        onActiveChange: updateActiveLabel,
+        onProgress: (bytes) => reporter.add(bytes),
+        writeChunk: async (position, piece) => {
+          if (writer) await writer.write(position, piece);
+          else memoryParts.push({ position, data: piece });
+        },
+        transferRange: async ({ start, end, index, onBytes }) => {
+          await streamContainerFileRange(node, containerId, filePath, start, end, signal, downloadId, onBytes);
+        },
+      });
+      if (writer) {
+        await writer.close();
+      } else {
+        saveMemoryRangeParts(memoryParts, fileName);
+      }
+      reporter.finish();
+    } catch (error) {
+      if (writer) await writer.abort();
+      throw error;
+    } finally {
+      reporter.stop();
+      if (resetDownloadSpeedRef.current) resetDownloadSpeedRef.current = null;
+    }
+  };
+
+  const downloadUrlInRanges = async (inputUrls, fileName, fileSize, signal) => {
+    if (!fileSize) {
+      setDownloadProgress({ current: fileName, percent: 100, speed: '0 B/s · 空文件', paused: false, cancellable: true });
+      saveBlobFile(new Blob([]), fileName);
+      return;
+    }
+    const downloadUrls = (Array.isArray(inputUrls) ? inputUrls : [inputUrls]).map((item) => String(item || '').trim()).filter(Boolean);
+    if (!downloadUrls.length) throw new Error('OneDrive 没有返回下载地址');
+    const plan = getDownloadPlan(fileSize);
+    const workerCount = Math.max(1, Math.min(readDownloadThreads() || plan.workerCount, Math.ceil(fileSize / 512 / 1024)));
+    let writable = null;
+    let writer = null;
+    const memoryParts = [];
+    const urlLabel = downloadUrls.length > 1 ? ` / ${downloadUrls.length} 域名` : '';
+    const labelRef = { current: `0/${workerCount} 线程连接中${urlLabel}` };
+    const updateActiveLabel = (activeCount, totalCount = workerCount) => {
+      labelRef.current = `${activeCount}/${totalCount} 线程${activeCount > 0 ? '接收中' : '连接中'}${urlLabel}`;
+    };
+    writable = await requireStreamingDownloadTarget(fileName, fileSize);
+    if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+    setDownloadProgress({ current: fileName, percent: 0, speed: `连接中 · ${labelRef.current}`, paused: false, cancellable: true });
+    const reporter = createDownloadProgressReporter({ fileSize, labelRef });
+    if (writable) writer = createOrderedFileWriter(writable, signal);
+    resetDownloadSpeedRef.current = reporter.reset;
+    const makeTimeoutSignal = (timeoutMs) => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const abort = () => controller.abort(new DOMException('Download cancelled', 'AbortError'));
+      signal.addEventListener('abort', abort, { once: true });
+      return {
+        signal: controller.signal,
+        cleanup: () => {
+          clearTimeout(timeout);
+          signal.removeEventListener('abort', abort);
+        },
+      };
+    };
+    const fetchRangeResponse = async (start, end, chunkIndex = 0, timeoutMs = 15000) => {
+      let lastError;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+        const timeout = makeTimeoutSignal(timeoutMs + attempt * 7000);
+        try {
+          const requestUrl = downloadUrls[(chunkIndex + attempt) % downloadUrls.length];
+          const response = await fetch(requestUrl, {
+            method: 'GET',
+            headers: { Range: `bytes=${start}-${end}` },
+            cache: 'no-store',
+            signal: timeout.signal,
+          });
+          timeout.cleanup();
+          return response;
+        } catch (error) {
+          timeout.cleanup();
+          lastError = error;
+          if (signal.aborted || downloadCancellingRef.current) throw new DOMException('Download cancelled', 'AbortError');
+          await new Promise((resolve) => setTimeout(resolve, 260 * (attempt + 1)));
+        }
+      }
+      throw lastError;
+    };
+    const fetchDirectResponse = async (timeoutMs = 15000) => {
+      let lastError;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+        const timeout = makeTimeoutSignal(timeoutMs + attempt * 7000);
+        try {
+          const response = await fetch(downloadUrls[attempt % downloadUrls.length], {
+            method: 'GET',
+            cache: 'no-store',
+            signal: timeout.signal,
+          });
+          timeout.cleanup();
+          return response;
+        } catch (error) {
+          timeout.cleanup();
+          lastError = error;
+          if (signal.aborted || downloadCancellingRef.current) throw new DOMException('Download cancelled', 'AbortError');
+          await new Promise((resolve) => setTimeout(resolve, 260 * (attempt + 1)));
+        }
+      }
+      throw lastError;
+    };
+    const readResponseStream = async (response, onBytes) => {
+      if (!response.body) {
+        const buffer = await response.arrayBuffer();
+        const piece = new Uint8Array(buffer);
+        await onBytes(piece);
+        return;
+      }
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
+          await waitForDownloadResume(signal);
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value?.byteLength) continue;
+          await onBytes(value instanceof Uint8Array ? value : new Uint8Array(value));
+        }
+      } catch (error) {
+        await reader.cancel().catch(() => undefined);
+        throw error;
+      }
+    };
+    try {
+      if (workerCount <= 1) {
+        labelRef.current = '0/1 线程连接中';
+        let position = 0;
+        const response = await fetchDirectResponse();
+        if (!response.ok) throw new Error(response.statusText || `OneDrive 下载失败: ${response.status}`);
+        await readResponseStream(response, async (piece) => {
+          const writePosition = position;
+          position += piece.byteLength;
+          labelRef.current = '1/1 线程接收中';
+          reporter.add(piece.byteLength);
+          if (writer) await writer.write(writePosition, piece);
+          else memoryParts.push({ position: writePosition, data: piece });
+        });
+      } else {
+        await runAdaptiveRangeDownload({
+          fileSize,
+          workerCount,
+          signal,
+          waitForResume: waitForDownloadResume,
+          onActiveChange: updateActiveLabel,
+          onProgress: (bytes) => reporter.add(bytes),
+          writeChunk: async (position, piece) => {
+            if (writer) await writer.write(position, piece);
+            else memoryParts.push({ position, data: piece });
+          },
+          transferRange: async ({ start, end, index, onBytes }) => {
+            const response = await fetchRangeResponse(start, end, index);
+            if (response.status !== 206) throw new Error(response.status === 200 ? '下载地址不支持分片 Range，请清空 CDN 或换支持 Range 的 CDN' : response.statusText || `OneDrive 下载失败: ${response.status}`);
+            await readResponseStream(response, onBytes);
+          },
+        });
+      }
+      if (writer) {
+        await writer.close();
+      } else {
+        saveMemoryRangeParts(memoryParts, fileName);
+      }
+      reporter.finish();
+    } catch (error) {
+      if (writer) await writer.abort();
+      throw error;
+    } finally {
+      reporter.stop();
+      if (resetDownloadSpeedRef.current) resetDownloadSpeedRef.current = null;
+    }
+  };
+
+  return {
+    uploadProgress,
+    downloadProgress,
+    startUpload,
+    startCloudUpload,
+    startLocalCloudUpload,
+    cancelUpload,
+    startDownload,
+    startCloudDownload,
+    cancelDownload,
+    toggleDownloadPause,
+  };
+}
+
+function TransferDock({ transferManager }) {
+  const { uploadProgress, downloadProgress, cancelUpload, cancelDownload, toggleDownloadPause } = transferManager;
+  const [collapsed, setCollapsed] = useState(false);
+  const transferItems = [
+    uploadProgress && {
+      id: 'upload',
+      action: '正在上传',
+      kind: 'upload',
+      icon: Upload,
+      progress: uploadProgress,
+      onCancel: cancelUpload,
+    },
+    downloadProgress && {
+      id: 'download',
+      action: '正在下载',
+      kind: 'download',
+      icon: Download,
+      progress: downloadProgress,
+      onCancel: cancelDownload,
+      onTogglePause: toggleDownloadPause,
+    },
+  ].filter(Boolean);
+  useEffect(() => {
+    if (transferItems.length) setCollapsed(false);
+  }, [transferItems.length]);
+  if (!transferItems.length) return null;
+  if (collapsed) {
+    return (
+      <div className="transfer-dock collapsed" aria-live="polite">
+        <button className="transfer-compact-button" onClick={() => setCollapsed(false)} type="button">
+          <Download size={17} />
+          <span>{transferItems.length} 个传输任务</span>
+          <ChevronDown size={16} />
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="transfer-dock" aria-live="polite">
+      <section className="transfer-queue-panel" role="dialog" aria-label="传输队列">
+        <header className="transfer-queue-head">
+          <button aria-label="关闭传输队列" onClick={() => setCollapsed(true)} type="button">
+            <X size={22} />
+          </button>
+          <strong>传输队列</strong>
+          <span>{transferItems.length} 项</span>
+          <button aria-label="收起传输队列" onClick={() => setCollapsed(true)} type="button">
+            <ChevronDown size={22} />
+          </button>
+        </header>
+        <div className="transfer-queue-list">
+          {transferItems.map((item) => (
+            <TransferQueueItem
+              action={item.action}
+              Icon={item.icon}
+              key={item.id}
+              kind={item.kind}
+              onCancel={item.onCancel}
+              onTogglePause={item.onTogglePause}
+              progress={item.progress}
+            />
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function TransferQueueItem({ action, Icon, kind, progress, onCancel, onTogglePause }) {
+  const PauseIcon = progress.paused ? Play : Pause;
+  return (
+    <article className="transfer-queue-item">
+      <div className={['transfer-file-icon', kind].join(' ')}>
+        <Icon size={18} />
+      </div>
+      <div className="transfer-queue-copy">
+        <div>
+          <strong title={progress.current}>{progress.current}</strong>
+          <b>{progress.percent}%</b>
+        </div>
+        <span>{action}</span>
+        <small>{progress.index ? `${progress.index}/${progress.total} · ` : ''}{progress.speed}</small>
+        <i><em style={{ width: `${progress.percent}%` }}></em></i>
+      </div>
+      <div className="transfer-actions">
+        {onTogglePause && (
+          <button aria-label={progress.paused ? '继续下载' : '暂停下载'} onClick={onTogglePause} title={progress.paused ? '继续' : '暂停'} type="button">
+            <PauseIcon size={16} />
+          </button>
+        )}
+        <button aria-label="取消传输" onClick={onCancel} title="取消" type="button">
+          <X size={16} />
+        </button>
+      </div>
+    </article>
   );
 }
 
@@ -440,7 +1769,21 @@ function ToastHost({ toasts, onClose }) {
               <strong>{toast.title}</strong>
               {toast.message && <span>{toast.message}</span>}
             </div>
-            <button aria-label="关闭通知" onClick={() => onClose(toast.id)} type="button"><X size={15} /></button>
+            <div className="toast-controls">
+              {toast.action?.label && (
+                <button
+                  className="toast-action"
+                  onClick={() => {
+                    toast.action.onClick?.();
+                    onClose(toast.id);
+                  }}
+                  type="button"
+                >
+                  {toast.action.label}
+                </button>
+              )}
+              <button className="toast-close" aria-label="关闭通知" onClick={() => onClose(toast.id)} type="button"><X size={15} /></button>
+            </div>
           </div>
         );
       })}
@@ -449,36 +1792,95 @@ function ToastHost({ toasts, onClose }) {
 }
 
 function useBodyScrollLock() {
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previousOverflow = document.body.style.overflow;
     const previousPaddingRight = document.body.style.paddingRight;
+    const previousScrollbarGutter = document.documentElement.style.scrollbarGutter;
     const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    document.documentElement.style.scrollbarGutter = 'stable';
     document.body.style.overflow = 'hidden';
-    if (scrollbarWidth > 0) {
+    if (scrollbarWidth > 0 && (typeof CSS === 'undefined' || !CSS.supports?.('scrollbar-gutter: stable'))) {
       document.body.style.paddingRight = `${scrollbarWidth}px`;
     }
     return () => {
       document.body.style.overflow = previousOverflow;
       document.body.style.paddingRight = previousPaddingRight;
+      document.documentElement.style.scrollbarGutter = previousScrollbarGutter;
     };
   }, []);
 }
 
-function ProductNav({ activeNode, activeView, nodes, query, setActiveNodeId, setActiveView, setQuery }) {
-  const items = navGroups[0].items;
-  const [nodeOpen, setNodeOpen] = useState(false);
-  const nodeSwitcherRef = useRef(null);
+function AuthGate({ loading, error, onLogin, onRegister }) {
+  const [mode, setMode] = useState('login');
+  const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState(error || '');
+  useEffect(() => setMessage(error || ''), [error]);
+  const setField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async (event) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setMessage('');
+    try {
+      if (mode === 'register') await onRegister(form);
+      else await onLogin({ email: form.email, password: form.password });
+    } catch (submitError) {
+      setMessage(friendlyError(submitError.message));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  return (
+    <main className="auth-page">
+      <section className="auth-shell">
+        <div className="auth-brand">
+          <img src={logo} alt="北冥" />
+          <div>
+            <strong>北冥云</strong>
+            <span>资源控制台</span>
+          </div>
+        </div>
+        <div className="auth-card">
+          <div className="auth-tabs">
+            <button className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')} type="button">登录</button>
+            <button className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')} type="button">注册</button>
+          </div>
+          <form className="login-form" onSubmit={submit}>
+            {mode === 'register' && (
+              <label>
+                <span>用户名</span>
+                <input autoComplete="name" value={form.name} onChange={(event) => setField('name', event.target.value)} />
+              </label>
+            )}
+            <label>
+              <span>邮箱</span>
+              <input autoComplete="email" type="email" value={form.email} onChange={(event) => setField('email', event.target.value)} />
+            </label>
+            <label>
+              <span>密码</span>
+              <input autoComplete={mode === 'register' ? 'new-password' : 'current-password'} type="password" value={form.password} onChange={(event) => setField('password', event.target.value)} />
+            </label>
+            {message && <div className="auth-message">{message}</div>}
+            <button className="primary auth-submit" disabled={submitting || loading} type="submit">
+              {submitting || loading ? '处理中' : mode === 'register' ? '创建账号' : '登录'}
+            </button>
+          </form>
+        </div>
+      </section>
+    </main>
+  );
+}
 
-  useEffect(() => {
-    if (!nodeOpen) return undefined;
-    const closeNodeMenu = (event) => {
-      if (nodeSwitcherRef.current && !nodeSwitcherRef.current.contains(event.target)) {
-        setNodeOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', closeNodeMenu);
-    return () => document.removeEventListener('mousedown', closeNodeMenu);
-  }, [nodeOpen]);
+function roleLabel(role) {
+  return role === 'SUPER_ADMIN' ? '超级管理员' : role === 'ADMIN' ? '管理员' : '普通用户';
+}
+
+function statusLabel(status) {
+  return status === 'ACTIVE' ? '正常' : '禁用';
+}
+
+function ProductNav({ activeView, setActiveView, user, onLogout }) {
+  const items = navGroups[0].items;
 
   return (
     <header className="product-nav">
@@ -500,115 +1902,94 @@ function ProductNav({ activeNode, activeView, nodes, query, setActiveNodeId, set
           );
         })}
       </nav>
-      <label className="global-search">
-        <Search size={17} />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索实例、容器、服务器、用户" />
-      </label>
-      <div className="node-switcher" ref={nodeSwitcherRef}>
-        <button className="node-button" onClick={() => setNodeOpen(!nodeOpen)} type="button">
-          <span>{activeNode.name}</span>
-          <ChevronDown size={18} />
-        </button>
-        {nodeOpen && (
-          <div className="node-menu">
-            {nodes.map((node) => (
-              <button
-                className={node.id === activeNode.id ? 'node-option active' : 'node-option'}
-                key={node.id}
-                onClick={() => {
-                  setActiveNodeId(node.id);
-                  setNodeOpen(false);
-                }}
-                type="button"
-              >
-                <ServerCog size={18} />
-                <span>{node.name}</span>
-              </button>
-            ))}
-            <button
-              className="node-manage"
-              onClick={() => {
-                setActiveView('nodes');
-                setNodeOpen(false);
-              }}
-              type="button"
-            >
-              <PencilLine size={18} />
-              <span>管理远程节点</span>
-            </button>
-          </div>
-        )}
-      </div>
       <div className="account-chip">
-        <div className="mini-avatar">{session.name.slice(0, 1)}</div>
+        <div className="mini-avatar">{(user?.name || user?.email || '-').slice(0, 1)}</div>
         <div>
-          <strong>{session.name}</strong>
-          <span>{session.role}</span>
+          <strong>{user?.name || user?.email}</strong>
+          <span>{roleLabel(user?.role)}</span>
         </div>
-        <MoreHorizontal size={18} />
+        <button aria-label="退出登录" className="icon-action" onClick={onLogout} type="button"><MoreHorizontal size={18} /></button>
       </div>
     </header>
   );
 }
 
-function Overview({ resources, activeNode }) {
-  const running = resources.filter((item) => item.status === '运行中').length;
+function ResourceWorkspace({ activeNode, resourceView, onResourceViewChange, resources, loading, error, notify, transferManager, nodes, onNodesChange, routeContainerId, onContainerSnapshot, onContainerRouteChange, onRetry }) {
+  const resourceTabs = [
+    { id: 'containers', label: '容器', desc: 'Docker 实例、终端与文件', icon: Container },
+    { id: 'vm', label: '虚拟机', desc: 'Virsh / libvirt 域', icon: MonitorCog },
+    { id: 'nodes', label: '远程节点', desc: 'Daemon 地址与令牌', icon: ServerCog },
+  ];
+  const isContainerView = resourceView === 'containers';
+  const isNodeView = resourceView === 'nodes';
+  const selected = resourceTabs.find((item) => item.id === resourceView) || resourceTabs[0];
+  const SelectedIcon = selected.icon;
+  const activeNodeName = formatNodeDisplayName(activeNode);
   return (
-    <section className="page">
-      <div className="hero">
-        <div>
-          <h1>统一管理虚拟机、容器与账号绑定</h1>
-          <p>当前节点：{activeNode.name}。虚拟机与容器跟随右上角 daemon 节点切换。</p>
-          <div className="hero-actions">
-            <button className="primary"><Plus size={17} />创建实例</button>
-            <button className="secondary"><TerminalSquare size={17} />打开控制台</button>
+    <section className="page resource-workspace">
+      <aside className="resource-side-menu" aria-label="资源类型">
+        <div className="resource-side-title">
+          <SelectedIcon size={18} />
+          <div>
+            <strong>资源</strong>
+            <span>{activeNodeName}</span>
           </div>
         </div>
-        <div className="hero-board">
-          <div className="board-head">
-            <span>北冥调度器</span>
-            <b>ONLINE</b>
-          </div>
-          <div className="board-grid">
-            <Signal label="MC" value="16 ms" />
-            <Signal label="VM" value="34%" />
-            <Signal label="CT" value="7/8" />
-            <Signal label="DB" value="42%" />
-          </div>
-          <div className="wave-line"></div>
-        </div>
-      </div>
-
-      <div className="metric-grid">
-        <Metric icon={Server} label="实例总数" value={resources.length} trend="+3 本周" />
-        <Metric icon={Activity} label="运行中" value={running} trend="SLA 99.96%" />
-        <Metric icon={Cpu} label="CPU 使用率" value="46%" trend="峰值 72%" />
-        <Metric icon={Database} label="数据库" value="Postgres" trend="等待连接" />
-      </div>
-
-      <div className="content-grid">
-        <Panel title="资源实例" action="查看全部" icon={Cloud}>
-          <ResourceTable resources={resources} />
-        </Panel>
-        <Panel title="最近事件" action="审计日志" icon={Gauge}>
-          <ActivityFeed />
-        </Panel>
-      </div>
-
-      <div className="content-grid compact">
-        <Panel title="账号绑定" action="管理绑定" icon={Link2}>
-          <AccountBindings />
-        </Panel>
-        <Panel title="容量与配额" action="调整配额" icon={HardDrive}>
-          <QuotaPanel />
-        </Panel>
+        <nav>
+          {resourceTabs.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                className={resourceView === item.id ? 'active' : ''}
+                key={item.id}
+                onClick={() => onResourceViewChange(item.id)}
+                type="button"
+              >
+                <Icon size={18} />
+                <span>
+                  <strong>{item.label}</strong>
+                  <em>{item.desc}</em>
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
+      <div className="resource-workspace-main">
+        {isNodeView ? (
+          <RemoteNodesView embedded nodes={nodes} notify={notify} onNodesChange={onNodesChange} />
+        ) : (
+          <ResourceCenter
+            activeNode={activeNode}
+            embedded
+            error={error}
+            initialContainerId={routeContainerId}
+            loading={loading}
+            notify={notify}
+            transferManager={transferManager}
+            onContainerRouteChange={onContainerRouteChange}
+            onContainerSnapshot={onContainerSnapshot}
+            onRetry={onRetry}
+            resources={resources}
+            title={isContainerView ? '容器' : '虚拟机'}
+            type={isContainerView ? 'Container' : 'Virtual Machine'}
+            variant={isContainerView ? 'containers' : 'table'}
+          />
+        )}
       </div>
     </section>
   );
 }
 
-function ResourceCenter({ title, type, resources, activeNode, loading = false, error = '', onRetry, variant = 'table', notify, initialContainerId = '', onContainerRouteChange, onContainerSnapshot }) {
+function ResourceCenter({ title, type, resources, activeNode, loading = false, error = '', onRetry, variant = 'table', notify, transferManager, initialContainerId = '', onContainerRouteChange, onContainerSnapshot, embedded = false }) {
   const scoped = resources.filter((item) => item.kind === type);
+  const activeNodeName = formatNodeDisplayName(activeNode);
+  const [resourceQuery, setResourceQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [batchRunning, setBatchRunning] = useState('');
+  const [cardRunningId, setCardRunningId] = useState('');
   const [activeContainer, setActiveContainer] = useState(() => {
     if (variant !== 'containers' || !initialContainerId) return null;
     return scoped.find((item) => item.id === initialContainerId || item.name === initialContainerId) || null;
@@ -617,9 +1998,36 @@ function ResourceCenter({ title, type, resources, activeNode, loading = false, e
   const restoredContainerRouteRef = useRef(false);
   const restoringContainerFetchRef = useRef('');
   const isContainerView = variant === 'containers';
+  const pageClassName = embedded ? 'resource-center' : 'page';
+  const statusOptions = isContainerView
+    ? [
+      { value: 'all', label: '全部' },
+      { value: 'running', label: '运行中' },
+      { value: 'stopped', label: '已停止' },
+      { value: 'pending', label: '待启动' },
+    ]
+    : [
+      { value: 'all', label: '全部' },
+      { value: 'running', label: '运行中' },
+      { value: 'maintenance', label: '维护中' },
+      { value: 'pending', label: '部署中' },
+    ];
+  const matchesStatus = (item) => {
+    if (statusFilter === 'all') return true;
+    if (statusFilter === 'running') return item.status === '运行中';
+    if (statusFilter === 'stopped') return item.status === '已停止';
+    if (statusFilter === 'maintenance') return item.status === '维护中';
+    if (statusFilter === 'pending') return ['部署中', '待启动'].includes(item.status);
+    return true;
+  };
+  const filteredScoped = scoped.filter((item) => {
+    const matchesQuery = matchesPinyinSearch([item.name, item.image, item.plan, item.region, item.endpoint], resourceQuery);
+    return matchesQuery && matchesStatus(item);
+  });
+  const selectedItems = filteredScoped.filter((item) => selectedIds.has(resourceKey(item)));
   const showBlockingLoading = loading && scoped.length === 0;
   const scopedActiveContainer = activeContainer ? scoped.find((item) => item.id === activeContainer.id) : null;
-  const currentContainer = activeContainer ? activeContainer : null;
+  const currentContainer = scopedActiveContainer || activeContainer || null;
   const shouldRestoreContainer = isContainerView && initialContainerId && !activeContainer && !restoredContainerRouteRef.current;
   useEffect(() => {
     if (isContainerView && activeContainer && initialContainerId) {
@@ -650,7 +2058,7 @@ function ResourceCenter({ title, type, resources, activeNode, loading = false, e
     if (activeNode?.id && resources.length === 0 && !error && restoringContainerFetchRef.current !== restoreFetchKey) {
       let cancelled = false;
       restoringContainerFetchRef.current = restoreFetchKey;
-      fetchContainer(activeNode.id, initialContainerId, { fast: true })
+      fetchContainer(activeNode, initialContainerId, { fast: true })
         .then((item) => {
           if (cancelled || restoredContainerRouteRef.current) return;
           const [mapped] = mapContainersToResources([item], activeNode);
@@ -671,10 +2079,28 @@ function ResourceCenter({ title, type, resources, activeNode, loading = false, e
       onContainerRouteChange?.('');
     }
   }, [activeContainer, activeNode, error, initialContainerId, isContainerView, loading, resources.length, scoped]);
+  useEffect(() => {
+    setBatchMode(false);
+    setSelectedIds(new Set());
+    setBatchRunning('');
+  }, [activeNode?.id, isContainerView]);
+  useEffect(() => {
+    setSelectedIds((current) => {
+      if (!current.size) return current;
+      const visibleIds = new Set(filteredScoped.map(resourceKey));
+      const next = new Set(Array.from(current).filter((id) => visibleIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [resources, resourceQuery, statusFilter, type]);
   const openContainer = (container) => {
     if (activeNode?.id) writeCachedContainer(activeNode.id, container.raw || container);
     setActiveContainer(container);
     onContainerRouteChange?.(container.id || container.name);
+    if (activeNode?.id) {
+      fetchContainer(activeNode, container.id || container.name, { fast: true })
+        .then(syncContainerSnapshot)
+        .catch(() => {});
+    }
   };
   const backToList = () => {
     restoredContainerRouteRef.current = true;
@@ -688,7 +2114,7 @@ function ResourceCenter({ title, type, resources, activeNode, loading = false, e
       setTimeout(() => onRetry?.(), 80);
       return;
     }
-    const items = await fetchContainers(activeNode.id);
+    const items = await fetchContainers(activeNode);
     const mapped = mapContainersToResources(items, activeNode);
     const latest = mapped.find((item) => item.name === preferredName)
       || mapped.find((item) => item.id === activeContainer.id)
@@ -700,18 +2126,94 @@ function ResourceCenter({ title, type, resources, activeNode, loading = false, e
     if (!activeNode?.id || !item) return null;
     const [mapped] = mapContainersToResources([item], activeNode);
     if (!mapped) return null;
-    writeCachedContainer(activeNode.id, item.raw || item);
-    onContainerSnapshot?.(mapped);
-    setActiveContainer(mapped);
-    return mapped;
+    const merged = keepPreviousContainerStats(mapped, currentContainer);
+    writeCachedContainer(activeNode.id, merged.raw || item.raw || item);
+    onContainerSnapshot?.(merged);
+    setActiveContainer(merged);
+    return merged;
+  };
+  const toggleBatchMode = () => {
+    setBatchMode((current) => {
+      if (current) setSelectedIds(new Set());
+      return !current;
+    });
+  };
+  const toggleResourceSelection = (item) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      const id = resourceKey(item);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+  const selectAllFiltered = () => {
+    setSelectedIds(new Set(filteredScoped.map(resourceKey)));
+  };
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+  };
+  const runBatchOperation = async (operation, label) => {
+    if (!activeNode?.id || selectedItems.length === 0 || batchRunning) return;
+    setBatchRunning(operation);
+    try {
+      const targets = selectedItems;
+      const results = await Promise.allSettled(targets.map((item) => (
+        isContainerView
+          ? operateContainer(activeNode, item.id || item.name, operation)
+          : operateVm(activeNode, item.id || item.name, operation)
+      )));
+      const failed = results
+        .map((result, index) => ({ result, item: targets[index] }))
+        .filter(({ result }) => result.status === 'rejected');
+      const successCount = targets.length - failed.length;
+      if (successCount > 0) {
+        notify?.({
+          title: `批量${label}已执行`,
+          message: failed.length > 0 ? `成功 ${successCount} 个，失败 ${failed.length} 个` : `${successCount} 个资源已提交操作`,
+          type: failed.length > 0 ? 'warning' : 'success',
+        });
+      } else {
+        notify?.({
+          type: 'error',
+          title: `批量${label}失败`,
+          message: friendlyError(failed[0]?.result?.reason?.message || '操作未完成'),
+          duration: 4600,
+        });
+      }
+      setSelectedIds(new Set(failed.map(({ item }) => resourceKey(item))));
+      setTimeout(() => onRetry?.(), 220);
+    } finally {
+      setBatchRunning('');
+    }
+  };
+  const runCardOperation = async (container, operation, label) => {
+    if (!activeNode?.id || cardRunningId) return;
+    const id = container.id || container.name;
+    setCardRunningId(`${id}:${operation}`);
+    try {
+      const latest = await runContainerOperationAndWait(activeNode, container, operation, label);
+      const mapped = mapContainersToResources([latest], activeNode)[0];
+      if (mapped) onContainerSnapshot?.(mapped);
+      notify?.({ title: `${label}完成`, message: mapped?.name || latest?.name || container.name });
+      setTimeout(() => onRetry?.(), 180);
+    } catch (error) {
+      notify?.({ type: 'error', title: `${label}失败`, message: friendlyError(error.message), duration: 4600 });
+    } finally {
+      setCardRunningId('');
+    }
   };
   if (isContainerView && currentContainer) {
     return (
-      <section className="page">
+      <section className={pageClassName}>
         <ContainerDetailPage
           container={currentContainer}
           node={activeNode}
           notify={notify}
+          transferManager={transferManager}
           onBack={backToList}
           onRefresh={onRetry}
           onContainerUpdate={syncContainerSnapshot}
@@ -722,7 +2224,7 @@ function ResourceCenter({ title, type, resources, activeNode, loading = false, e
   }
   if (shouldRestoreContainer) {
     return (
-      <section className="page">
+      <section className={pageClassName}>
         <ContainerRouteRestoring
           activeNode={activeNode}
           containerId={initialContainerId}
@@ -738,15 +2240,43 @@ function ResourceCenter({ title, type, resources, activeNode, loading = false, e
     );
   }
   return (
-    <section className="page">
-      <PageHead title={title} desc={`当前共享节点：${activeNode?.name || 'Daemon'}。集中查看和管理 ${title} 实例、状态、入口与负责人。`} action={isContainerView ? '创建容器' : '创建资源'} onAction={isContainerView ? () => setCreatingContainer(true) : undefined} />
+    <section className={pageClassName}>
+      <PageHead title={title} desc={`当前共享节点：${activeNodeName}。集中查看和管理 ${title} 实例、状态、入口与负责人。`} action={isContainerView ? '创建容器' : '创建资源'} onAction={isContainerView ? () => setCreatingContainer(true) : undefined} />
       <div className="metric-grid three">
         <Metric icon={Box} label="实例" value={scoped.length} trend="当前筛选" />
-        <Metric icon={Zap} label="平均负载" value={`${Math.round(scoped.reduce((sum, item) => sum + item.load, 0) / Math.max(scoped.length, 1))}%`} trend="自动计算" />
+        <Metric icon={Zap} label={isContainerView ? '平均 CPU' : '平均负载'} value={`${Math.round(scoped.reduce((sum, item) => sum + item.load, 0) / Math.max(scoped.length, 1))}%`} trend={isContainerView ? 'CPU 使用率' : '自动计算'} />
         <Metric icon={CheckCircle2} label="健康状态" value={scoped.some((item) => item.status !== '运行中') ? '需关注' : '正常'} trend="实时巡检" />
       </div>
-      <Panel title={`${title} 列表`} action="批量操作" icon={Layers3}>
-        {showBlockingLoading && <StateMessage title="正在读取节点资源" desc={`正在通过 daemon 查询 ${activeNode?.name || '当前节点'}。`} />}
+      <Panel title={`${title} 列表`} action={batchMode ? '退出批量' : '批量操作'} icon={Layers3} onAction={toggleBatchMode}>
+        <div className="resource-list-tools">
+          <label className="resource-list-search">
+            <Search size={17} />
+            <input
+              value={resourceQuery}
+              onChange={(event) => setResourceQuery(event.target.value)}
+              placeholder={isContainerView ? '搜索容器、镜像、节点' : '搜索虚拟机、节点、状态'}
+            />
+          </label>
+          <div className="resource-filter-tabs">
+            {statusOptions.map((option) => (
+              <button className={statusFilter === option.value ? 'active' : ''} key={option.value} onClick={() => setStatusFilter(option.value)} type="button">
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {batchMode && (
+          <BatchToolbar
+            isContainerView={isContainerView}
+            running={batchRunning}
+            selectedCount={selectedItems.length}
+            totalCount={filteredScoped.length}
+            onClear={clearSelection}
+            onRun={runBatchOperation}
+            onSelectAll={selectAllFiltered}
+          />
+        )}
+        {showBlockingLoading && <StateMessage title="正在读取节点资源" desc={`正在通过 daemon 查询 ${activeNodeName}。`} />}
         {!showBlockingLoading && error && (
           <StateMessage
             title="节点暂时不可用"
@@ -758,11 +2288,11 @@ function ResourceCenter({ title, type, resources, activeNode, loading = false, e
             ]}
           />
         )}
-        {!showBlockingLoading && !error && scoped.length === 0 && <StateMessage title="暂无资源" desc="当前节点没有返回该类型资源，或搜索条件没有匹配项。" actions={[{ label: isContainerView ? '创建容器' : '创建资源', onClick: isContainerView ? () => setCreatingContainer(true) : undefined }]} />}
-        {!showBlockingLoading && !error && scoped.length > 0 && (
+        {!showBlockingLoading && !error && filteredScoped.length === 0 && <StateMessage title="暂无资源" desc="当前节点没有返回该类型资源，或搜索和筛选条件没有匹配项。" actions={[{ label: isContainerView ? '创建容器' : '创建资源', onClick: isContainerView ? () => setCreatingContainer(true) : undefined }]} />}
+        {!showBlockingLoading && !error && filteredScoped.length > 0 && (
           isContainerView
-            ? <ContainerCardGrid containers={scoped} onOpen={openContainer} />
-            : <ResourceTable resources={scoped} />
+            ? <ContainerCardGrid activeNode={activeNode} batchMode={batchMode} containers={filteredScoped} onOpen={openContainer} onOperate={runCardOperation} onToggleSelect={toggleResourceSelection} runningAction={cardRunningId} selectedIds={selectedIds} />
+            : <ResourceTable batchMode={batchMode} onToggleSelect={toggleResourceSelection} resources={filteredScoped} selectedIds={selectedIds} />
         )}
       </Panel>
       {creatingContainer && (
@@ -781,92 +2311,130 @@ function ResourceCenter({ title, type, resources, activeNode, loading = false, e
 }
 
 function friendlyError(error) {
-  if (error === 'Failed to fetch') {
+  const text = String(error || '').trim();
+  if (!text) return '操作失败';
+  if (text === 'Failed to fetch') {
     return '无法连接北冥后端服务，请确认 API 服务已启动，或稍后重试。';
   }
-  if (error.includes('ENOENT')) {
+  if (text.includes('ENOENT')) {
     return 'Daemon 配置不可用，请检查节点配置。';
   }
-  if (error.toLowerCase().includes('timed out')) {
+  if (text.toLowerCase().includes('timed out')) {
     return 'Daemon 连接超时，请检查节点地址、端口和防火墙。';
   }
-  return error;
+  return text;
 }
 
-function readRouteState() {
+function activeViewFromLocation() {
+  return new URLSearchParams(window.location.search).get('view') || 'resources';
+}
+
+function cleanOneDriveCallbackParams() {
   const params = new URLSearchParams(window.location.search);
-  const view = params.get('view') || 'overview';
+  params.delete('code');
+  params.delete('state');
+  params.delete('session_state');
+  params.set('view', 'cloud');
+  const query = params.toString();
+  window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
+}
+
+function formatCloudFileTime(value) {
+  if (!value) return '-';
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return '-';
+  return new Date(timestamp).toLocaleString();
+}
+
+let renameMeasureContext = null;
+
+function getRenameInputWidth(value) {
+  const text = String(value || ' ');
+  if (!renameMeasureContext && typeof document !== 'undefined') {
+    renameMeasureContext = document.createElement('canvas').getContext('2d');
+  }
+  if (!renameMeasureContext) return '120px';
+  renameMeasureContext.font = '520 14px Inter, "Microsoft YaHei", "Segoe UI", Arial, sans-serif';
+  const textWidth = renameMeasureContext.measureText(text).width;
+  return `${Math.max(54, Math.min(640, Math.ceil(textWidth) + 18))}px`;
+}
+
+const searchTextCache = new Map();
+
+function compactSearchText(value) {
+  return String(value || '').trim().toLowerCase().replace(/[\s._\-\\/]+/g, '');
+}
+
+function getPinyinSearchText(values) {
+  const source = (Array.isArray(values) ? values : [values]).filter(Boolean).join(' ');
+  if (!source) return '';
+  const cached = searchTextCache.get(source);
+  if (cached) return cached;
+  const lower = source.toLowerCase();
+  const compact = compactSearchText(source);
+  const full = pinyin(source, { toneType: 'none', type: 'array' }).join('').toLowerCase();
+  const initials = pinyin(source, { toneType: 'none', pattern: 'first', type: 'array' }).join('').toLowerCase();
+  const text = `${lower} ${compact} ${full} ${initials}`;
+  searchTextCache.set(source, text);
+  return text;
+}
+
+function matchesPinyinSearch(values, query) {
+  const keyword = String(query || '').trim().toLowerCase();
+  if (!keyword) return true;
+  const compact = compactSearchText(keyword);
+  const searchText = getPinyinSearchText(values);
+  return searchText.includes(keyword) || Boolean(compact && searchText.includes(compact));
+}
+
+function normalizeCloudDriveItem(raw = {}) {
+  const folder = raw.folder && typeof raw.folder === 'object' ? raw.folder : {};
+  const file = raw.file && typeof raw.file === 'object' ? raw.file : {};
   return {
-    view: ['overview', 'vm', 'containers', 'nodes', 'network', 'identity', 'security'].includes(view) ? view : 'overview',
-    nodeId: params.get('node') || '',
-    containerId: params.get('container') || '',
+    id: String(raw.id || ''),
+    name: String(raw.name || ''),
+    type: raw.type || (raw.folder ? 'd' : 'f'),
+    size: Number(raw.size || 0),
+    modifiedAt: String(raw.modifiedAt || raw.lastModifiedDateTime || ''),
+    mimeType: String(raw.mimeType || file.mimeType || ''),
+    childCount: Number(raw.childCount || folder.childCount || 0),
+    shortcut: Boolean(raw.shortcut || raw.remoteItem),
   };
 }
 
-function updateRouteState({ view, nodeId, containerId }) {
-  const params = new URLSearchParams();
-  if (view && view !== 'overview') params.set('view', view);
-  if (nodeId) params.set('node', nodeId);
-  if (containerId) params.set('container', containerId);
-  const queryString = params.toString();
-  const nextUrl = `${window.location.pathname}${queryString ? `?${queryString}` : ''}`;
-  window.history.replaceState(null, '', nextUrl);
+function resourceKey(item) {
+  return `${item.kind}:${item.id || item.name}`;
 }
 
-function readCachedContainers(nodeId) {
-  if (!nodeId || typeof window === 'undefined') return [];
-  try {
-    const raw = window.localStorage.getItem(`${CONTAINER_CACHE_PREFIX}${nodeId}`);
-    if (!raw) return [];
-    const payload = JSON.parse(raw);
-    if (!payload?.savedAt || Date.now() - payload.savedAt > CONTAINER_CACHE_TTL) return [];
-    return Array.isArray(payload.items) ? payload.items : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeCachedContainers(nodeId, items) {
-  if (!nodeId || !Array.isArray(items) || typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(`${CONTAINER_CACHE_PREFIX}${nodeId}`, JSON.stringify({
-      savedAt: Date.now(),
-      items,
-    }));
-    for (const item of items) {
-      writeCachedContainer(nodeId, item);
-    }
-  } catch {
-    // Cache is only for faster first paint.
-  }
-}
-
-function readCachedContainer(nodeId, containerId) {
-  if (!nodeId || !containerId || typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(`${CONTAINER_DETAIL_CACHE_PREFIX}${nodeId}:${containerId}`);
-    if (!raw) return null;
-    const payload = JSON.parse(raw);
-    if (!payload?.savedAt || Date.now() - payload.savedAt > CONTAINER_CACHE_TTL) return null;
-    return payload.item || null;
-  } catch {
-    return null;
-  }
-}
-
-function writeCachedContainer(nodeId, item) {
-  if (!nodeId || !item || typeof window === 'undefined') return;
-  const keys = [item.id, item.name].filter(Boolean);
-  if (item.ID) keys.push(item.ID);
-  if (item.Names) keys.push(item.Names);
-  try {
-    const payload = JSON.stringify({ savedAt: Date.now(), item });
-    for (const key of new Set(keys)) {
-      window.localStorage.setItem(`${CONTAINER_DETAIL_CACHE_PREFIX}${nodeId}:${key}`, payload);
-    }
-  } catch {
-    // Cache is only for faster first paint.
-  }
+function BatchToolbar({ isContainerView, selectedCount, totalCount, running, onRun, onSelectAll, onClear }) {
+  const operations = [
+    { operation: 'start', label: '启动', icon: Power },
+    { operation: 'restart', label: '重启', icon: RotateCw },
+    { operation: 'stop', label: '关闭', icon: Square },
+    { operation: 'kill', label: isContainerView ? '强制终止' : '强制停止', icon: Scissors },
+  ];
+  return (
+    <div className="resource-batch-toolbar">
+      <div className="batch-summary">
+        <span>已选 {selectedCount} / {totalCount}</span>
+      </div>
+      <div className="batch-secondary-actions">
+        <button disabled={totalCount === 0 || Boolean(running)} onClick={onSelectAll} type="button">全选当前筛选</button>
+        <button disabled={selectedCount === 0 || Boolean(running)} onClick={onClear} type="button">清空</button>
+      </div>
+      <div className="batch-operation-actions">
+        {operations.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button disabled={selectedCount === 0 || Boolean(running)} key={item.operation} onClick={() => onRun(item.operation, item.label)} type="button">
+              <Icon size={15} />
+              {running === item.operation ? '执行中' : item.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function StateMessage({ title, desc, tone = 'default', actions = [] }) {
@@ -891,31 +2459,93 @@ function StateMessage({ title, desc, tone = 'default', actions = [] }) {
   );
 }
 
-function ContainerCardGrid({ containers, onOpen }) {
+function ContainerCardGrid({ containers, activeNode, onOpen, onOperate, batchMode = false, selectedIds = new Set(), onToggleSelect, runningAction = '' }) {
   return (
     <div className="container-grid">
-      {containers.map((container) => (
-        <button className="container-card" key={container.id} onClick={() => onOpen(container)} type="button">
-          <div className="container-card-head">
-            <DockerImageIcon image={container.image} />
-            <div>
-              <strong>{container.name}</strong>
-              <span>{container.image}</span>
+      {containers.map((container) => {
+        const selected = selectedIds.has(resourceKey(container));
+        const id = container.id || container.name;
+        const running = container.status === '运行中' || container.state === 'running';
+        const actionBusy = runningAction.startsWith(`${id}:`);
+        const nodeDisplayName = getResourceNodeDisplayName(container, activeNode);
+        const handleCardClick = () => (batchMode ? onToggleSelect?.(container) : onOpen(container));
+        const runAction = (event, operation, label) => {
+          event.stopPropagation();
+          onOperate?.(container, operation, label);
+        };
+        return (
+          <article
+            aria-pressed={batchMode ? selected : undefined}
+            className={['container-card', batchMode ? 'batch-selectable' : '', selected ? 'batch-selected' : ''].filter(Boolean).join(' ')}
+            key={container.id}
+            onClick={handleCardClick}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                handleCardClick();
+              }
+            }}
+            role="button"
+            tabIndex={0}
+          >
+            <div className="container-card-head">
+              <DockerImageIcon image={container.image} />
+              <div>
+                <strong>{container.name}</strong>
+                <span>{container.image}</span>
+              </div>
+              <ContainerState status={container.status} />
             </div>
-            <ContainerState status={container.status} />
-          </div>
-          <div className="container-stats">
-            <ContainerMetric label="CPU" value={`${Number(container.stats.cpuPercent || 0).toFixed(2)}%`} percent={container.stats.cpuPercent || 0} />
-            <ContainerMetric label="内存" value={`${formatBytes(container.stats.memoryUsedBytes || 0)} / ${formatBytes(container.stats.memoryLimitBytes || 0)}`} percent={container.stats.memoryPercent || 0} />
-            <ContainerMetric label="Swap" value={formatBytes(container.stats.swapUsedBytes || 0)} />
-            <ContainerMetric label="网络" value={`↓ ${formatRate(container.stats.networkDownloadBps || 0)} / ↑ ${formatRate(container.stats.networkUploadBps || 0)}`} />
-          </div>
-          <div className="container-meta">
-            <InfoChip label="网络模式" value={container.network?.mode || '-'} />
-            <PortMappingChip ports={container.network?.ports} />
-          </div>
-        </button>
-      ))}
+            <div className="container-node-chip">
+              <ServerCog size={15} />
+              <span>所属节点</span>
+              <strong>{nodeDisplayName}</strong>
+            </div>
+            {running && (
+              <div className="container-stats">
+                <ContainerMetric icon={Cpu} label="CPU" tone="blue" value={`${Number(container.stats.cpuUsagePercent ?? container.stats.cpuPercent ?? 0).toFixed(2)}%`} percent={container.stats.cpuUsagePercent ?? container.stats.cpuPercent ?? 0} />
+                <ContainerMetric icon={Database} label="内存" tone="purple" value={formatBytes(container.stats.memoryUsedBytes || 0)} percent={container.stats.memoryPercent || 0} />
+                <ContainerMetric icon={HardDrive} label="Swap" tone="slate" value={formatBytes(container.stats.swapUsedBytes || 0)} />
+                <ContainerMetric
+                  icon={Network}
+                  label="网络"
+                  tone="accent"
+                  value={[
+                    `↓ ${formatRate(container.stats.networkDownloadBps || 0)}`,
+                    `↑ ${formatRate(container.stats.networkUploadBps || 0)}`,
+                  ]}
+                />
+              </div>
+            )}
+            <div className="container-meta">
+              <InfoChip label="网络模式" value={container.network?.mode || '-'} />
+              <PortMappingChip ports={container.network?.ports} />
+            </div>
+            {!batchMode && (
+              <div className="container-card-actions" onClick={(event) => event.stopPropagation()}>
+                {running ? (
+                  <>
+                    <button aria-label="关闭容器" disabled={actionBusy} onClick={(event) => runAction(event, 'stop', '关闭')} title="关闭" type="button">
+                      <Pause size={15} />
+                    </button>
+                    <button aria-label="重启容器" disabled={actionBusy} onClick={(event) => runAction(event, 'restart', '重启')} title="重启" type="button">
+                      <RotateCw size={15} />
+                    </button>
+                    <button aria-label="终止容器" className="danger" disabled={actionBusy} onClick={(event) => runAction(event, 'kill', '终止')} title="终止" type="button">
+                      <X size={16} />
+                    </button>
+                  </>
+                ) : (
+                  <button aria-label="启动容器" className="start" disabled={actionBusy} onClick={(event) => runAction(event, 'start', '启动')} title="启动" type="button">
+                    <Power size={15} />
+                  </button>
+                )}
+              </div>
+            )}
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -959,12 +2589,27 @@ function StatusIcon({ tone }) {
   return <span className="status-icon muted"><Minus size={8} strokeWidth={3} /></span>;
 }
 
-function ContainerMetric({ label, value, percent }) {
+function metricHealthTone(percent) {
+  const value = Number(percent) || 0;
+  if (value >= 85) return 'danger';
+  if (value >= 65) return 'warn';
+  return 'healthy';
+}
+
+function ContainerMetric({ icon: Icon, label, value, percent, tone = 'slate' }) {
+  const isPairValue = Array.isArray(value);
+  const healthTone = percent !== undefined ? metricHealthTone(percent) : '';
   return (
-    <div className="container-metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      {percent !== undefined && <i><b style={{ width: `${Math.min(Number(percent) || 0, 100)}%` }}></b></i>}
+    <div className={`container-metric ${tone}`}>
+      <span>{Icon && <Icon size={14} />}{label}</span>
+      {isPairValue ? (
+        <strong className="metric-pair">
+          {value.map((item, index) => <em className={index === 0 ? 'download' : 'upload'} key={item}>{item}</em>)}
+        </strong>
+      ) : (
+        <strong>{value}</strong>
+      )}
+      {percent !== undefined && <i className={healthTone}><b style={{ width: `${Math.min(Number(percent) || 0, 100)}%` }}></b></i>}
     </div>
   );
 }
@@ -979,6 +2624,7 @@ function InfoChip({ label, value }) {
 }
 
 function ContainerRouteRestoring({ activeNode, containerId, loading, error, onBack, onRetry }) {
+  const activeNodeName = formatNodeDisplayName(activeNode);
   return (
     <section className="container-detail route-restoring">
       <button className="back-link" onClick={onBack} type="button"><ArrowLeft size={17} />返回容器列表</button>
@@ -988,7 +2634,7 @@ function ContainerRouteRestoring({ activeNode, containerId, loading, error, onBa
           <div>
             <h1>正在恢复容器控制台</h1>
             <div className="console-badges">
-              <span>{activeNode?.name || 'Daemon'}</span>
+              <span>{activeNodeName}</span>
               <span>{containerId}</span>
             </div>
           </div>
@@ -999,7 +2645,7 @@ function ContainerRouteRestoring({ activeNode, containerId, loading, error, onBa
           { label: '重试', onClick: onRetry },
           { label: '返回列表', onClick: onBack },
         ] : []}
-        desc={error ? friendlyError(error) : `正在通过 daemon 查询 ${activeNode?.name || '当前节点'} 的容器状态。`}
+        desc={error ? friendlyError(error) : `正在通过 daemon 查询 ${activeNodeName} 的容器状态。`}
         title={error ? '容器控制台恢复失败' : loading ? '正在读取容器信息' : '正在匹配容器'}
         tone={error ? 'danger' : 'default'}
       />
@@ -1028,8 +2674,6 @@ function ReviewCard({ title, value, detail }) {
   );
 }
 
-const CONTAINER_FINAL_STATES = new Set(['running', 'exited', 'created', 'dead']);
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1043,7 +2687,7 @@ function sameContainerIdentity(item, identity = {}) {
   );
 }
 
-async function waitForContainerState(nodeId, identity, predicate, options = {}) {
+async function waitForContainerState(node, identity, predicate, options = {}) {
   const timeout = options.timeout || 20000;
   const interval = options.interval || 260;
   const startedAt = Date.now();
@@ -1053,13 +2697,13 @@ async function waitForContainerState(nodeId, identity, predicate, options = {}) 
     let items = null;
     if (identity.id) {
       try {
-        match = await fetchContainer(nodeId, identity.id, { fast: true });
+        match = await fetchContainer(node, identity.id, { fast: true });
       } catch (error) {
         if (!/not found|404|container not found/i.test(error.message || '')) throw error;
       }
     }
     if (!match && identity.name) {
-      const list = await fetchContainers(nodeId, { fast: true });
+      const list = await fetchContainers(node, { fast: true });
       items = list;
       match = list.find((item) => sameContainerIdentity(item, identity));
     }
@@ -1071,7 +2715,26 @@ async function waitForContainerState(nodeId, identity, predicate, options = {}) 
   throw new Error(message);
 }
 
-function ContainerDetailPage({ container, node, notify, onBack, onRefresh, onSaved, onContainerUpdate }) {
+async function runContainerOperationAndWait(node, container, operation, label) {
+  const previousStartedAt = container.raw?.startedAt || container.startedAt || '';
+  await operateContainer(node, container.id || container.name, operation);
+  return waitForContainerState(
+    node,
+    { id: container.id, name: container.name },
+    (item) => {
+      const state = item?.state || '';
+      if (operation === 'start') return state === 'running';
+      if (operation === 'stop' || operation === 'kill') return ['exited', 'created', 'dead'].includes(state);
+      if (operation === 'restart') {
+        return state === 'running' && (!previousStartedAt || item.startedAt !== previousStartedAt);
+      }
+      return item && containerFinalStates.has(state);
+    },
+    { timeoutMessage: `${label}已提交，但状态确认超时` },
+  );
+}
+
+function ContainerDetailPage({ container, node, notify, transferManager, onBack, onRefresh, onSaved, onContainerUpdate }) {
   const [busyAction, setBusyAction] = useState('');
   const busyActionRef = useRef('');
   const [editing, setEditing] = useState(false);
@@ -1092,22 +2755,7 @@ function ContainerDetailPage({ container, node, notify, onBack, onRefresh, onSav
     setBusyAction(operation);
     busyActionRef.current = operation;
     try {
-      const previousStartedAt = container.raw?.startedAt || container.startedAt || '';
-      await operateContainer(node.id, container.id, operation);
-      const latest = await waitForContainerState(
-        node.id,
-        { id: container.id, name: container.name },
-        (item) => {
-          const state = item?.state || '';
-          if (operation === 'start') return state === 'running';
-          if (operation === 'stop' || operation === 'kill') return ['exited', 'created', 'dead'].includes(state);
-          if (operation === 'restart') {
-            return state === 'running' && (!previousStartedAt || item.startedAt !== previousStartedAt);
-          }
-          return item && CONTAINER_FINAL_STATES.has(state);
-        },
-        { timeoutMessage: `${label}已提交，但状态确认超时` },
-      );
+      const latest = await runContainerOperationAndWait(node, container, operation, label);
       if (busyActionRef.current !== operation) return;
       const synced = onContainerUpdate?.(latest);
       notify?.({ title: `${label}完成`, message: synced?.name || latest?.name || container.name });
@@ -1129,7 +2777,7 @@ function ContainerDetailPage({ container, node, notify, onBack, onRefresh, onSav
     setOpeningEdit(true);
     let nextSnapshot = container;
     try {
-      const latest = await fetchContainer(node.id, container.id, { fast: true });
+      const latest = await fetchContainer(node, container.id, { fast: true });
       nextSnapshot = onContainerUpdate?.(latest) || container;
     } catch {
       // Use the current snapshot if a transient refresh fails.
@@ -1164,7 +2812,7 @@ function ContainerDetailPage({ container, node, notify, onBack, onRefresh, onSav
       </div>
 
       <ContainerTerminal container={container} node={node} title={container.name} />
-      <ContainerFileManager container={container} node={node} notify={notify} />
+      <ContainerFileManager container={container} node={node} notify={notify} transferManager={transferManager} />
       {editing && (
         <ContainerEditModal
           container={editSnapshot || container}
@@ -1192,7 +2840,7 @@ function ContainerDetailPage({ container, node, notify, onBack, onRefresh, onSav
   );
 }
 
-function ContainerFileManager({ container, node, notify }) {
+function ContainerFileManager({ container, node, notify, transferManager }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -1206,7 +2854,7 @@ function ContainerFileManager({ container, node, notify }) {
         </div>
         <button onClick={() => setOpen(true)} type="button"><Folder size={16} />打开文件</button>
       </section>
-      {open && <ContainerFileModal container={container} node={node} notify={notify} onClose={() => setOpen(false)} />}
+      {open && <ContainerFileModal container={container} node={node} notify={notify} transferManager={transferManager} onClose={() => setOpen(false)} />}
     </>
   );
 }
@@ -1233,11 +2881,243 @@ const FILE_COLUMN_MIN_WIDTHS = {
 };
 
 const FILE_COLUMN_STORAGE_KEY = 'beiming-file-column-widths';
+const CLOUD_COLUMN_STORAGE_KEY = 'beiming-cloud-column-widths';
+const CLOUD_LOCATION_STORAGE_KEY = 'beiming-cloud-location';
+const CLOUD_DRIVES_STORAGE_KEY = 'beiming-cloud-drives';
+const CLOUD_CLIPBOARD_STORAGE_KEY = 'beiming-cloud-clipboard';
+const CLOUD_INITIAL_FETCH_LIMIT = 80;
+const CLOUD_PAGE_FETCH_LIMIT = 200;
+const CLOUD_DIR_CACHE_STORAGE_KEY = 'beiming-cloud-dir-cache-v1';
+const CLOUD_DIR_CACHE_LIMIT = 48;
+const cloudMemorySnapshots = new Map();
 
-function readFileColumnWidths() {
+const cloudRootStack = [{ id: 'root', name: 'OneDrive' }];
+
+function readCloudLocationFromUrl() {
+  if (typeof window === 'undefined') return { driveId: '', itemId: 'root' };
+  const params = new URLSearchParams(window.location.search);
+  return {
+    driveId: params.get('cloudDrive') || params.get('drive') || '',
+    itemId: params.get('cloudItem') || 'root',
+  };
+}
+
+function writeCloudLocationToUrl(driveId = '', itemId = 'root') {
+  if (typeof window === 'undefined') return;
+  const params = new URLSearchParams(window.location.search);
+  params.set('view', 'cloud');
+  params.delete('onedrive');
+  params.delete('message');
+  params.delete('drive');
+  if (driveId) params.set('cloudDrive', driveId);
+  else params.delete('cloudDrive');
+  if (itemId && itemId !== 'root') params.set('cloudItem', itemId);
+  else params.delete('cloudItem');
+  const query = params.toString();
+  window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
+}
+
+function readStoredCloudStack(driveId = '', itemId = 'root') {
+  if (typeof window === 'undefined' || !driveId) return cloudRootStack;
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(CLOUD_LOCATION_STORAGE_KEY) || '{}');
+    const stack = Array.isArray(stored[driveId]) ? stored[driveId] : cloudRootStack;
+    const normalized = stack
+      .filter((segment) => segment?.id)
+      .map((segment) => ({ id: String(segment.id), name: String(segment.name || '') || 'OneDrive' }));
+    if (!normalized.length || normalized[0].id !== 'root') normalized.unshift(cloudRootStack[0]);
+    if ((itemId || 'root') !== (normalized[normalized.length - 1]?.id || 'root')) return itemId === 'root' ? cloudRootStack : [...cloudRootStack, { id: itemId, name: '当前目录' }];
+    return normalized;
+  } catch {
+    return itemId === 'root' ? cloudRootStack : [...cloudRootStack, { id: itemId, name: '当前目录' }];
+  }
+}
+
+function writeStoredCloudStack(driveId = '', stack = cloudRootStack) {
+  if (typeof window === 'undefined' || !driveId) return;
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(CLOUD_LOCATION_STORAGE_KEY) || '{}');
+    stored[driveId] = stack.map((segment) => ({ id: segment.id, name: segment.name }));
+    window.localStorage.setItem(CLOUD_LOCATION_STORAGE_KEY, JSON.stringify(stored));
+  } catch {
+    // Refresh recovery is best-effort; navigation still works without storage.
+  }
+}
+
+function sanitizeCloudDrives(drives = []) {
+  return Array.from(drives || [])
+    .filter((drive) => drive?.id)
+    .filter((drive) => String(drive.authMode || '') !== 'shared-shortcut-fallback')
+    .map((drive) => ({
+      id: String(drive.id || ''),
+      provider: String(drive.provider || 'onedrive'),
+      displayName: String(drive.displayName || ''),
+      accountName: String(drive.accountName || ''),
+      driveId: String(drive.driveId || ''),
+      rootItemId: String(drive.rootItemId || ''),
+      authMode: String(drive.authMode || ''),
+      createdAt: Number(drive.createdAt || 0),
+      updatedAt: Number(drive.updatedAt || 0),
+      quota: drive.quota && typeof drive.quota === 'object'
+        ? {
+            used: Number(drive.quota.used || 0),
+            total: Number(drive.quota.total || 0),
+            remaining: Number(drive.quota.remaining || 0),
+            deleted: Number(drive.quota.deleted || 0),
+            state: String(drive.quota.state || ''),
+          }
+        : null,
+    }));
+}
+
+function readStoredCloudDrives() {
+  if (typeof window === 'undefined') return [];
+  try {
+    return sanitizeCloudDrives(JSON.parse(window.localStorage.getItem(CLOUD_DRIVES_STORAGE_KEY) || '[]'));
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredCloudDrives(drives = []) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(CLOUD_DRIVES_STORAGE_KEY, JSON.stringify(sanitizeCloudDrives(drives)));
+  } catch {
+    // Cached mount list only affects first paint.
+  }
+}
+
+function sanitizeCloudClipboard(value) {
+  if (!value || typeof value !== 'object') return null;
+  const mode = value.mode === 'cut' ? 'cut' : value.mode === 'copy' ? 'copy' : '';
+  const driveId = String(value.driveId || '');
+  const parentId = String(value.parentId || 'root');
+  const items = Array.isArray(value.items)
+    ? value.items
+        .filter((item) => item?.id)
+        .map((item) => ({
+          id: String(item.id || ''),
+          name: String(item.name || ''),
+          type: item.type === 'd' ? 'd' : 'f',
+        }))
+    : [];
+  if (!mode || !driveId || !items.length) return null;
+  return {
+    mode,
+    driveId,
+    parentId,
+    items,
+    createdAt: Number(value.createdAt || Date.now()),
+  };
+}
+
+function readStoredCloudClipboard() {
+  if (typeof window === 'undefined') return null;
+  try {
+    return sanitizeCloudClipboard(JSON.parse(window.localStorage.getItem(CLOUD_CLIPBOARD_STORAGE_KEY) || 'null'));
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredCloudClipboard(clipboard) {
+  if (typeof window === 'undefined') return;
+  try {
+    const normalized = sanitizeCloudClipboard(clipboard);
+    if (normalized) window.localStorage.setItem(CLOUD_CLIPBOARD_STORAGE_KEY, JSON.stringify(normalized));
+    else window.localStorage.removeItem(CLOUD_CLIPBOARD_STORAGE_KEY);
+  } catch {
+    // Clipboard persistence is best-effort.
+  }
+}
+
+function cloudDirCacheKey(driveId = '', itemId = 'root') {
+  return `${driveId}:${itemId || 'root'}`;
+}
+
+function readCloudDirCache() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const cache = JSON.parse(window.localStorage.getItem(CLOUD_DIR_CACHE_STORAGE_KEY) || '{}');
+    return cache && typeof cache === 'object' ? cache : {};
+  } catch {
+    return {};
+  }
+}
+
+function readCloudDirSnapshot(driveId = '', itemId = 'root') {
+  const key = cloudDirCacheKey(driveId, itemId);
+  const memoryEntry = cloudMemorySnapshots.get(key);
+  if (memoryEntry && Array.isArray(memoryEntry.items)) return memoryEntry;
+  const entry = readCloudDirCache()[key];
+  if (!entry || !Array.isArray(entry.items)) return null;
+  cloudMemorySnapshots.set(key, entry);
+  return entry;
+}
+
+function writeCloudDirSnapshot(driveId = '', itemId = 'root', entry = {}) {
+  if (typeof window === 'undefined' || !driveId) return;
+  try {
+    const cache = readCloudDirCache();
+    const key = cloudDirCacheKey(driveId, itemId);
+    const snapshot = {
+      items: Array.isArray(entry.items) ? entry.items.slice(0, 5000) : [],
+      updatedAt: Date.now(),
+    };
+    cloudMemorySnapshots.set(key, snapshot);
+    cache[key] = snapshot;
+    const sorted = Object.entries(cache).sort((left, right) => Number(right[1]?.updatedAt || 0) - Number(left[1]?.updatedAt || 0));
+    window.localStorage.setItem(CLOUD_DIR_CACHE_STORAGE_KEY, JSON.stringify(Object.fromEntries(sorted.slice(0, CLOUD_DIR_CACHE_LIMIT))));
+  } catch {
+    // Snapshot cache is an acceleration path only.
+  }
+}
+
+function isTemporaryCloudItemId(id) {
+  const value = String(id || '');
+  return value.startsWith('uploaded:') || value.startsWith('uploading:');
+}
+
+function sameCloudItems(leftItems = [], rightItems = []) {
+  if (leftItems.length !== rightItems.length) return false;
+  return leftItems.every((left, index) => {
+    const right = rightItems[index];
+    return left?.id === right?.id
+      && left?.name === right?.name
+      && left?.type === right?.type
+      && Number(left?.size || 0) === Number(right?.size || 0)
+      && String(left?.modifiedAt || '') === String(right?.modifiedAt || '');
+  });
+}
+
+function mergeCloudItems(currentItems = [], nextItems = []) {
+  const merged = new Map();
+  currentItems.forEach((item) => {
+    if (item?.id) merged.set(item.id, item);
+  });
+  nextItems.forEach((item) => {
+    if (!item?.id) return;
+    const isTemporary = isTemporaryCloudItemId(item.id);
+    const sameNameEntry = Array.from(merged.entries()).find(([, current]) => (
+      current?.name === item.name && current?.type === item.type
+    ));
+    if (isTemporary && sameNameEntry && !isTemporaryCloudItemId(sameNameEntry[0])) return;
+    if (isTemporary && sameNameEntry && isTemporaryCloudItemId(sameNameEntry[0])) {
+      merged.delete(sameNameEntry[0]);
+    }
+    if (!isTemporary && sameNameEntry && isTemporaryCloudItemId(sameNameEntry[0])) {
+      merged.delete(sameNameEntry[0]);
+    }
+    merged.set(item.id, item);
+  });
+  return Array.from(merged.values());
+}
+
+function readFileColumnWidths(storageKey = FILE_COLUMN_STORAGE_KEY) {
   if (typeof window === 'undefined') return FILE_COLUMN_DEFAULT_WIDTHS;
   try {
-    const stored = JSON.parse(window.localStorage.getItem(FILE_COLUMN_STORAGE_KEY) || '{}');
+    const stored = JSON.parse(window.localStorage.getItem(storageKey) || '{}');
     return FILE_COLUMNS.reduce((widths, column) => {
       const fallback = FILE_COLUMN_DEFAULT_WIDTHS[column.key];
       const width = Number(stored[column.key]);
@@ -1251,7 +3131,1152 @@ function readFileColumnWidths() {
   }
 }
 
-function ContainerFileModal({ container, node, notify, onClose }) {
+function CloudDriveView({ notify, transferManager }) {
+  const initialCloudLocation = useMemo(() => readCloudLocationFromUrl(), []);
+  const initialCloudDrives = useMemo(() => readStoredCloudDrives(), []);
+  const initialDriveExists = initialCloudDrives.some((drive) => drive.id === initialCloudLocation.driveId);
+  const initialCloudStack = useMemo(() => readStoredCloudStack(initialCloudLocation.driveId, initialCloudLocation.itemId), [initialCloudLocation]);
+  const [configured, setConfigured] = useState(false);
+  const [platformConfigured, setPlatformConfigured] = useState(false);
+  const [authUrl, setAuthUrl] = useState('');
+  const [cloudConfig, setCloudConfig] = useState({ clientId: '', redirectUri: '', cdnHost: '', hasSecret: false });
+  const [configDialog, setConfigDialog] = useState(null);
+  const [sharedDialog, setSharedDialog] = useState(null);
+  const [drives, setDrives] = useState(initialCloudDrives);
+  const [activeDriveId, setActiveDriveId] = useState(initialDriveExists ? initialCloudLocation.driveId : initialCloudDrives[0]?.id || initialCloudLocation.driveId);
+  const [currentItem, setCurrentItem] = useState(initialCloudStack[initialCloudStack.length - 1] || { id: 'root', name: 'OneDrive' });
+  const [items, setItems] = useState([]);
+  const [itemsReady, setItemsReady] = useState(false);
+  const [pathStack, setPathStack] = useState(initialCloudStack);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [pendingCreate, setPendingCreate] = useState(null);
+  const [deleteDialog, setDeleteDialog] = useState(null);
+  const [renamingId, setRenamingId] = useState('');
+  const [renameValue, setRenameValue] = useState('');
+  const [contextMenu, setContextMenu] = useState(null);
+  const [fileClipboard, setFileClipboardState] = useState(() => readStoredCloudClipboard());
+  const [fileSort, setFileSort] = useState({ key: 'name', direction: 'asc' });
+  const [fileColumnWidths, setFileColumnWidths] = useState(() => readFileColumnWidths(CLOUD_COLUMN_STORAGE_KEY));
+  const [selectionBox, setSelectionBox] = useState(null);
+  const uploadRef = useRef(null);
+  const cloudFilesTableRef = useRef(null);
+  const selectionBaseRef = useRef([]);
+  const dirAbortRef = useRef(null);
+  const activeCloudLocationRef = useRef({ driveId: '', itemId: 'root' });
+  const renameClickTimerRef = useRef(null);
+  const fileColumnTemplate = FILE_COLUMNS.map((column) => `${fileColumnWidths[column.key]}px`).join(' ');
+  const fileColumnStyle = useMemo(() => ({ gridTemplateColumns: fileColumnTemplate }), [fileColumnTemplate]);
+  const cloudFileColumnStyle = useMemo(() => ({
+    gridTemplateColumns: 'minmax(220px, 1fr) minmax(150px, 0.54fr) minmax(100px, 0.28fr) minmax(90px, 0.2fr)',
+  }), []);
+  const itemsRef = useRef([]);
+  const activeDrive = drives.find((drive) => drive.id === activeDriveId) || drives[0] || null;
+  const currentId = currentItem?.id || 'root';
+  const visibleItems = useMemo(() => {
+    const filtered = items.filter((item) => matchesPinyinSearch(item.name, searchQuery));
+    const direction = fileSort.direction === 'desc' ? -1 : 1;
+    const getValue = (item) => {
+      if (fileSort.key === 'modified') return Date.parse(item.modifiedAt || '') || 0;
+      if (fileSort.key === 'type') return item.type === 'd' ? '文件夹' : item.mimeType || '文件';
+      if (fileSort.key === 'size') return item.type === 'd' ? -1 : Number(item.size || 0);
+      return String(item.name || '').toLowerCase();
+    };
+    return [...filtered].sort((left, right) => {
+      const leftIsDir = left.type === 'd';
+      const rightIsDir = right.type === 'd';
+      if (leftIsDir !== rightIsDir) return leftIsDir ? -1 : 1;
+      const leftValue = getValue(left);
+      const rightValue = getValue(right);
+      if (typeof leftValue === 'number' && typeof rightValue === 'number') return (leftValue - rightValue) * direction;
+      return String(leftValue).localeCompare(String(rightValue), 'zh-Hans-CN', { numeric: true }) * direction;
+    });
+  }, [fileSort, items, searchQuery]);
+  const selectedItems = items.filter((item) => selectedIds.includes(item.id));
+  const canPasteCloudClipboard = Boolean(fileClipboard?.items?.length && activeDriveId);
+  const activeDriveQuota = activeDrive?.quota || null;
+  const activeDriveQuotaTotal = Number(activeDriveQuota?.total || 0);
+  const activeDriveQuotaUsed = Number(activeDriveQuota?.used || 0);
+  const activeDriveQuotaPercent = activeDriveQuotaTotal > 0
+    ? Math.min(100, Math.max(0, (activeDriveQuotaUsed / activeDriveQuotaTotal) * 100))
+    : 0;
+  const hasMountedDrive = Boolean(activeDriveId && activeDrive);
+
+  const setFileClipboard = useCallback((value) => {
+    setFileClipboardState((current) => {
+      const next = typeof value === 'function' ? value(current) : value;
+      const normalized = sanitizeCloudClipboard(next);
+      writeStoredCloudClipboard(normalized);
+      return normalized;
+    });
+  }, []);
+
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  useEffect(() => {
+    if (!fileClipboard?.driveId || !drives.length) return;
+    if (!drives.some((drive) => drive.id === fileClipboard.driveId)) setFileClipboard(null);
+  }, [drives, fileClipboard?.driveId, setFileClipboard]);
+
+  useEffect(() => {
+    loadStatus();
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+    const oneDriveResult = params.get('onedrive');
+    if (activeViewFromLocation() === 'cloud' && oneDriveResult) {
+      if (oneDriveResult === 'connected') {
+        notify?.({ title: 'OneDrive 已挂载', message: '授权完成' });
+        loadStatus(params.get('drive') || '');
+      } else {
+        notify?.({ type: 'error', title: 'OneDrive 挂载失败', message: friendlyError(params.get('message') || '授权失败'), duration: 5200 });
+      }
+      cleanOneDriveCallbackParams();
+      return;
+    }
+    if (!code || activeViewFromLocation() !== 'cloud') return;
+    connectOneDrive(code)
+      .then((drive) => {
+        notify?.({ title: 'OneDrive 已挂载', message: drive.accountName || drive.displayName });
+        cleanOneDriveCallbackParams();
+        return loadStatus(drive.id);
+      })
+      .catch((connectError) => {
+        notify?.({ type: 'error', title: 'OneDrive 挂载失败', message: friendlyError(connectError.message), duration: 5200 });
+        cleanOneDriveCallbackParams();
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!activeDriveId) return;
+    activeCloudLocationRef.current = { driveId: activeDriveId, itemId: currentId };
+    writeCloudLocationToUrl(activeDriveId, currentId);
+    writeStoredCloudStack(activeDriveId, pathStack);
+    loadItems(activeDriveId, currentId);
+  }, [activeDriveId, currentId, pathStack]);
+
+  useEffect(() => {
+    if (!activeDriveId || !currentId) return undefined;
+    const controller = new AbortController();
+    let running = false;
+    const tick = async () => {
+      if (running || controller.signal.aborted || document.hidden) return;
+      running = true;
+      try {
+        await refreshCurrentDirExternalChanges(activeDriveId, currentId, controller.signal);
+      } catch {
+        // Background refresh is best-effort; explicit refresh still reports errors.
+      } finally {
+        running = false;
+      }
+    };
+    const timer = window.setInterval(tick, CLOUD_EXTERNAL_REFRESH_INTERVAL);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [activeDriveId, currentId]);
+
+  useEffect(() => {
+    if (!selectionBox?.active) return undefined;
+    const moveSelectionBox = (event) => {
+      event.preventDefault();
+      const nextBox = {
+        ...selectionBox,
+        x: event.clientX,
+        y: event.clientY,
+      };
+      setSelectionBox(nextBox);
+      const rect = normalizeRect(nextBox.startX, nextBox.startY, nextBox.x, nextBox.y);
+      const ids = Array.from(cloudFilesTableRef.current?.querySelectorAll('.file-entry[data-file-id]') || [])
+        .filter((row) => rectsIntersect(rect, row.getBoundingClientRect()))
+        .map((row) => row.getAttribute('data-file-id'))
+        .filter(Boolean);
+      const merged = event.ctrlKey || event.metaKey ? [...selectionBaseRef.current, ...ids] : ids;
+      setSelectedIds(Array.from(new Set(merged)));
+    };
+    const endSelectionBox = () => setSelectionBox(null);
+    window.addEventListener('mousemove', moveSelectionBox);
+    window.addEventListener('mouseup', endSelectionBox, { once: true });
+    return () => {
+      window.removeEventListener('mousemove', moveSelectionBox);
+      window.removeEventListener('mouseup', endSelectionBox);
+    };
+  }, [selectionBox]);
+
+  useEffect(() => () => {
+    dirAbortRef.current?.abort();
+    if (renameClickTimerRef.current) clearTimeout(renameClickTimerRef.current);
+  }, []);
+
+  const loadStatus = async (preferredDriveId = '') => {
+    try {
+      const result = await fetchOneDriveStatus();
+      setConfigured(Boolean(result.configured));
+      setPlatformConfigured(Boolean(result.platformConfigured));
+      setAuthUrl(result.authUrl || '');
+      setCloudConfig(result.config || { clientId: '', redirectUri: '', cdnHost: '', hasSecret: false });
+      const nextDrives = Array.isArray(result.drives) ? result.drives : [];
+      const routeLocation = readCloudLocationFromUrl();
+      const routeDriveExists = nextDrives.some((drive) => drive.id === routeLocation.driveId);
+      const nextDriveId = preferredDriveId || (routeDriveExists ? routeLocation.driveId : '');
+      writeStoredCloudDrives(nextDrives);
+      setDrives(nextDrives);
+      setActiveDriveId((current) => {
+        const resolvedDriveId = nextDriveId || (nextDrives.some((drive) => drive.id === current) ? current : nextDrives[0]?.id || '');
+        if (resolvedDriveId !== current) {
+          const restoredItemId = resolvedDriveId === routeLocation.driveId ? routeLocation.itemId : 'root';
+          const restoredStack = readStoredCloudStack(resolvedDriveId, restoredItemId);
+          setPathStack(restoredStack);
+          setCurrentItem(restoredStack[restoredStack.length - 1] || { id: 'root', name: 'OneDrive' });
+        }
+        return resolvedDriveId;
+      });
+    } catch (statusError) {
+      setError(friendlyError(statusError.message));
+    }
+  };
+
+  const upsertCloudItems = (driveId, itemId, rawItems = []) => {
+    const nextItems = rawItems
+      .map(normalizeCloudDriveItem)
+      .filter((item) => item.id && item.name);
+    if (!driveId || !itemId || !nextItems.length) return false;
+    setItems((current) => {
+      const merged = mergeCloudItems(current, nextItems);
+      writeCloudDirSnapshot(driveId, itemId, { items: merged });
+      return merged;
+    });
+    setItemsReady(true);
+    return true;
+  };
+
+  const removeCloudItemsByIds = (driveId, itemId, ids = []) => {
+    const idSet = new Set(ids.filter(Boolean).map(String));
+    if (!driveId || !itemId || idSet.size === 0) return;
+    setItems((current) => {
+      const nextItems = current.filter((item) => !idSet.has(String(item?.id || '')));
+      writeCloudDirSnapshot(driveId, itemId, { items: nextItems });
+      return nextItems;
+    });
+    setSelectedIds((current) => current.filter((id) => !idSet.has(String(id))));
+  };
+
+  const fetchDirItems = async (driveId, itemId = 'root', options = {}) => {
+    return fetchCloudFiles(driveId, itemId, {
+      cursor: options.cursor,
+      limit: options.limit,
+      signal: options.signal,
+    });
+  };
+
+  const ensureActiveDir = (driveId, itemId, signal) => {
+    const location = activeCloudLocationRef.current;
+    return !signal?.aborted && location.driveId === driveId && location.itemId === itemId;
+  };
+
+  const fetchAllDirItems = async (driveId, itemId, signal) => {
+    const firstPage = await fetchDirItems(driveId, itemId, { limit: CLOUD_INITIAL_FETCH_LIMIT, signal });
+    const allItems = Array.isArray(firstPage.items) ? [...firstPage.items] : [];
+    let cursor = firstPage.nextCursor || '';
+    while (cursor) {
+      const page = await fetchDirItems(driveId, itemId, { cursor, limit: CLOUD_PAGE_FETCH_LIMIT, signal });
+      allItems.push(...(Array.isArray(page.items) ? page.items : []));
+      cursor = page.nextCursor || '';
+    }
+    return { ...firstPage, items: allItems, nextCursor: '', hasMore: false };
+  };
+
+  const appendRemainingDirItems = async (driveId, itemId, cursor, signal) => {
+    let nextCursor = cursor || '';
+    while (nextCursor) {
+      const page = await fetchDirItems(driveId, itemId, { cursor: nextCursor, limit: CLOUD_PAGE_FETCH_LIMIT, signal });
+      if (!ensureActiveDir(driveId, itemId, signal)) return;
+      applyDirResult(page, driveId, itemId, '', { append: true, preserveSelection: true });
+      nextCursor = page.nextCursor || '';
+    }
+  };
+
+  const refreshCurrentDirExternalChanges = async (driveId, itemId, signal) => {
+    if (!driveId || !itemId) return;
+    const result = await fetchAllDirItems(driveId, itemId, signal);
+    if (!ensureActiveDir(driveId, itemId, signal)) return;
+    const allItems = Array.isArray(result.items) ? result.items : [];
+    if (!sameCloudItems(itemsRef.current, allItems)) {
+      applyDirResult(result, driveId, itemId, '', { preserveSelection: true });
+    }
+  };
+
+  const applyDirResult = (result, driveId, itemId, fallbackName = '', options = {}) => {
+    const currentName = result.current?.name || fallbackName || pathStack.find((segment) => segment.id === itemId)?.name || currentItem?.name || 'OneDrive';
+    setCurrentItem({ id: result.current?.id || itemId || 'root', name: currentName });
+    const nextItems = Array.isArray(result.items) ? result.items : [];
+    setItems((current) => {
+      const merged = options.append || options.merge ? mergeCloudItems(current, nextItems) : nextItems;
+      writeCloudDirSnapshot(driveId, itemId, { items: merged });
+      return merged;
+    });
+    setItemsReady(true);
+    if (!options.append && !options.merge) {
+      if (!options.preserveSelection) setSelectedIds([]);
+    }
+  };
+
+  const loadItems = async (driveId = activeDriveId, itemId = currentId, options = {}) => {
+    if (!driveId) return;
+    dirAbortRef.current?.abort();
+    const controller = new AbortController();
+    dirAbortRef.current = controller;
+    const snapshot = !options.force ? readCloudDirSnapshot(driveId, itemId) : null;
+    const hasSnapshot = Boolean(snapshot && Array.isArray(snapshot.items));
+    if (hasSnapshot) {
+      setItems(snapshot.items || []);
+      setItemsReady(true);
+      setSelectedIds([]);
+    }
+    setLoading(!options.background && !hasSnapshot);
+    setError('');
+    if (!options.background && !hasSnapshot) setItemsReady(false);
+    if (!options.keepItems && !hasSnapshot) {
+      setItems([]);
+      setSelectedIds([]);
+    }
+    try {
+      if (hasSnapshot) setLoading(false);
+      const result = await fetchDirItems(driveId, itemId, { limit: CLOUD_INITIAL_FETCH_LIMIT, signal: controller.signal });
+      if (!ensureActiveDir(driveId, itemId, controller.signal)) return;
+      applyDirResult(result, driveId, itemId, '', { merge: Boolean(options.preserveCurrent) });
+      if (dirAbortRef.current === controller) setLoading(false);
+      if (result.nextCursor) await appendRemainingDirItems(driveId, itemId, result.nextCursor, controller.signal);
+    } catch (loadError) {
+      if (controller.signal.aborted || loadError.name === 'AbortError') return;
+      setError(friendlyError(loadError.message));
+      setItems([]);
+      setItemsReady(true);
+    } finally {
+      if (dirAbortRef.current === controller) dirAbortRef.current = null;
+      if (activeCloudLocationRef.current.driveId === driveId && activeCloudLocationRef.current.itemId === itemId) setLoading(false);
+    }
+  };
+
+  const connectDrive = async () => {
+    if (busy) return;
+    if (!configured) {
+      notify?.({
+        type: 'error',
+        title: 'OneDrive 授权未启用',
+        message: platformConfigured
+          ? 'OneDrive 平台应用配置还在加载，请稍后重试'
+          : '后端没有配置北冥 OneDrive 应用，请检查 ONEDRIVE_CLIENT_ID 和 ONEDRIVE_CLIENT_SECRET',
+        duration: 5600,
+      });
+      return;
+    }
+    setBusy('onedrive-auth');
+    try {
+      const result = await startOneDriveAuth();
+      window.location.href = result.url;
+    } catch (authError) {
+      notify?.({ type: 'error', title: 'OneDrive 授权失败', message: friendlyError(authError.message), duration: 5200 });
+      setBusy('');
+    }
+  };
+
+  const openConfigDialog = () => {
+    setConfigDialog({
+      cdnHost: cloudConfig.cdnHost || '',
+      downloadThreads: String(readDownloadThreads() || ''),
+      uploadThreads: String(readUploadThreads() || ''),
+      saving: false,
+      error: '',
+    });
+  };
+
+  const openSharedDialog = () => {
+    setSharedDialog({ url: '', name: '', saving: false, error: '' });
+  };
+
+  const submitSharedFolder = async () => {
+    if (!sharedDialog || sharedDialog.saving) return;
+    setSharedDialog((current) => current ? { ...current, saving: true, error: '' } : current);
+    try {
+      const drive = await mountOneDriveSharedFolder({
+        url: sharedDialog.url,
+        name: sharedDialog.name,
+        driveId: activeDriveId,
+      });
+      notify?.({ title: '共享文件夹已添加', message: drive.displayName || drive.accountName || 'OneDrive' });
+      setSharedDialog(null);
+      await loadStatus(drive.id);
+    } catch (sharedError) {
+      setSharedDialog((current) => current ? { ...current, saving: false, error: friendlyError(sharedError.message) } : current);
+    }
+  };
+
+  const submitConfig = async () => {
+    if (!configDialog || configDialog.saving) return;
+    setConfigDialog((current) => current ? { ...current, saving: true, error: '' } : current);
+    try {
+      const result = await saveOneDriveConfig({
+        cdnHost: configDialog.cdnHost,
+      });
+      setConfigured(Boolean(result.configured));
+      setPlatformConfigured(Boolean(result.platformConfigured));
+      setAuthUrl(result.authUrl || '');
+      setCloudConfig(result.config || { clientId: '', redirectUri: '', cdnHost: '', hasSecret: false });
+      const nextDrives = Array.isArray(result.drives) ? result.drives : [];
+      writeStoredCloudDrives(nextDrives);
+      setDrives(nextDrives);
+      writeDownloadThreads(configDialog.downloadThreads);
+      writeUploadThreads(configDialog.uploadThreads);
+      setConfigDialog(null);
+      const downloadThreads = readDownloadThreads();
+      const uploadThreads = readUploadThreads();
+      notify?.({ title: 'OneDrive 配置已保存', message: `${result.config?.cdnHost ? `下载 CDN：${result.config.cdnHost}` : '下载使用 OneDrive 原始直链'}${downloadThreads ? ` · 下载 ${downloadThreads} 分片` : ''}${uploadThreads ? ` · 上传 ${uploadThreads} 通道` : ''}` });
+    } catch (configError) {
+      setConfigDialog((current) => current ? { ...current, saving: false, error: friendlyError(configError.message) } : current);
+    }
+  };
+
+  const disconnectDrive = async () => {
+    if (!activeDriveId) return;
+    setBusy('disconnect');
+    try {
+      await disconnectCloudDrive(activeDriveId);
+      notify?.({ title: '已移除挂载', message: activeDrive?.displayName || 'OneDrive' });
+      dirAbortRef.current?.abort();
+      setPathStack([{ id: 'root', name: 'OneDrive' }]);
+      setCurrentItem({ id: 'root', name: 'OneDrive' });
+      writeStoredCloudDrives(drives.filter((drive) => drive.id !== activeDriveId));
+      await loadStatus();
+    } catch (disconnectError) {
+      notify?.({ type: 'error', title: '移除失败', message: friendlyError(disconnectError.message), duration: 4600 });
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const navigateToItem = (item) => {
+    if (!item || item.type !== 'd') return;
+    setPathStack((current) => [...current, { id: item.id, name: item.name }]);
+    setCurrentItem({ id: item.id, name: item.name });
+  };
+
+  const navigateToCrumb = (index) => {
+    const nextStack = pathStack.slice(0, index + 1);
+    setPathStack(nextStack);
+    setCurrentItem(nextStack[nextStack.length - 1] || { id: 'root', name: 'OneDrive' });
+  };
+
+  const uploadFilesByLocalProcess = async () => {
+    if (!activeDriveId || busy) return;
+    await transferManager.startLocalCloudUpload({
+      driveId: activeDriveId,
+      parentId: currentId,
+      onSelected: ({ files } = {}) => {
+        const placeholders = Array.from(files || []).map((file) => ({
+          id: `uploading:${activeDriveId}:${currentId}:${file.name}:${Number(file.size || 0)}`,
+          name: file.name,
+          type: 'f',
+          size: Number(file.size || 0),
+          modifiedAt: new Date().toISOString(),
+        }));
+        upsertCloudItems(activeDriveId, currentId, placeholders);
+      },
+      onComplete: async ({ completedFiles, files } = {}) => {
+        const inserted = upsertCloudItems(activeDriveId, currentId, completedFiles || []);
+        return loadItems(activeDriveId, currentId, { force: true, background: true, keepItems: true, preserveCurrent: inserted });
+      },
+      onFailed: ({ files } = {}) => {
+        const ids = Array.from(files || []).map((file) => `uploading:${activeDriveId}:${currentId}:${file.name}:${Number(file.size || 0)}`);
+        removeCloudItemsByIds(activeDriveId, currentId, ids);
+      },
+    });
+  };
+
+  const createFolder = () => {
+    setPendingCreate({ name: nextNewEntryName('新建文件夹', items.map((item) => item.name)) });
+  };
+
+  const submitCreate = async () => {
+    if (!pendingCreate || busy) return;
+    const name = pendingCreate.name.trim();
+    if (!name) {
+      setPendingCreate(null);
+      return;
+    }
+    setBusy('mkdir');
+    setPendingCreate(null);
+    try {
+      const created = await createCloudFolder(activeDriveId, currentId, name);
+      upsertCloudItems(activeDriveId, currentId, [created]);
+      notify?.({ title: '文件夹已创建', message: created?.name || name });
+    } catch (mkdirError) {
+      notify?.({ type: 'error', title: '创建失败', message: friendlyError(mkdirError.message), duration: 4600 });
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const startRename = (item) => {
+    setRenamingId(item.id);
+    setRenameValue(item.name);
+  };
+
+  const scheduleRenameFromNameClick = (event, item, selected) => {
+    if (busy || renamingId || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (!selected) return;
+    event.stopPropagation();
+    if (renameClickTimerRef.current) clearTimeout(renameClickTimerRef.current);
+    renameClickTimerRef.current = window.setTimeout(() => {
+      startRename(item);
+      renameClickTimerRef.current = null;
+    }, 520);
+  };
+
+  const cancelScheduledRename = () => {
+    if (!renameClickTimerRef.current) return;
+    clearTimeout(renameClickTimerRef.current);
+    renameClickTimerRef.current = null;
+  };
+
+  const submitRename = async (item) => {
+    const name = renameValue.trim();
+    if (!name || name === item.name) {
+      setRenamingId('');
+      return;
+    }
+    setBusy('rename');
+    try {
+      const renamed = await renameCloudItem(activeDriveId, item.id, name);
+      upsertCloudItems(activeDriveId, currentId, [renamed || { ...item, name }]);
+      setRenamingId('');
+      notify?.({ title: '已重命名', message: name });
+    } catch (renameError) {
+      notify?.({ type: 'error', title: '重命名失败', message: friendlyError(renameError.message), duration: 4600 });
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const requestDeleteItems = (targets = selectedItems) => {
+    const itemsToDelete = Array.from(targets || []);
+    if (!itemsToDelete.length) return;
+    setDeleteDialog({ items: itemsToDelete });
+  };
+
+  const deleteItems = async (targets = deleteDialog?.items || []) => {
+    if (!targets.length) return;
+    const deleteIds = targets.map((item) => item.id);
+    setBusy('delete');
+    try {
+      setDeleteDialog(null);
+      for (const item of targets) {
+        await deleteCloudItem(activeDriveId, item.id);
+      }
+      removeCloudItemsByIds(activeDriveId, currentId, deleteIds);
+      notify?.({ title: '已删除' });
+    } catch (deleteError) {
+      notify?.({ type: 'error', title: '删除失败', message: friendlyError(deleteError.message), duration: 4600 });
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const copySelected = (mode = 'copy', targets = selectedItems) => {
+    const itemsToCopy = Array.from(targets || []);
+    if (!activeDriveId || !itemsToCopy.length) return;
+    setFileClipboard({
+      mode,
+      driveId: activeDriveId,
+      parentId: currentId,
+      createdAt: Date.now(),
+      items: itemsToCopy.map((item) => ({
+        id: item.id,
+        name: item.name,
+        type: item.type,
+      })),
+    });
+    notify?.({ title: mode === 'cut' ? '已剪切' : '已复制', message: `${itemsToCopy.length} 项` });
+  };
+
+  const pasteClipboard = async (targetParentId = currentId) => {
+    if (!canPasteCloudClipboard || busy) return;
+    setBusy(fileClipboard.mode === 'cut' ? 'move' : 'copy');
+    try {
+      const isCrossDrive = fileClipboard.driveId !== activeDriveId;
+      if (isCrossDrive && fileClipboard.mode === 'cut') {
+        notify?.({ type: 'error', title: '不能跨账号剪切', message: '跨账号只支持复制为 OneDrive 快捷入口', duration: 4200 });
+        return;
+      }
+      if (isCrossDrive && fileClipboard.mode === 'copy') {
+        if (targetParentId !== 'root') {
+          notify?.({ type: 'error', title: '只能粘贴到根目录', message: 'OneDrive 只允许把共享文件夹快捷入口添加到目标账号根目录', duration: 4600 });
+          return;
+        }
+        if (!fileClipboard.items.every((item) => item.type === 'd')) {
+          notify?.({ type: 'error', title: '暂不支持跨账号文件复制', message: 'Graph 只支持共享文件夹快捷入口，文件不能不经下载直接转存', duration: 5200 });
+          return;
+        }
+        const completed = [];
+        for (const item of fileClipboard.items) {
+          const copied = await copyCloudItem(fileClipboard.driveId, item.id, {
+            targetDriveId: activeDriveId,
+            parentId: 'root',
+            name: item.name,
+          });
+          completed.push(copied);
+        }
+        const normalized = completed.filter((item) => item && item.id).map(normalizeCloudDriveItem);
+        if (normalized.length && currentId === 'root') upsertCloudItems(activeDriveId, currentId, normalized);
+        await loadItems(activeDriveId, currentId, { force: true, background: true, keepItems: true, preserveCurrent: true });
+        notify?.({
+          title: '快捷方式已创建',
+          message: `${normalized.length || completed.length} 项`,
+        });
+        return;
+      }
+      const completed = [];
+      const movedIds = [];
+      for (const item of fileClipboard.items) {
+        if (!item?.id) continue;
+        if (fileClipboard.mode === 'cut') {
+          if (fileClipboard.driveId === activeDriveId && fileClipboard.parentId === targetParentId) continue;
+          const moved = await moveCloudItem(fileClipboard.driveId, item.id, { targetDriveId: activeDriveId, parentId: targetParentId });
+          completed.push(moved);
+          movedIds.push(item.id);
+        } else {
+          const copied = await copyCloudItem(fileClipboard.driveId, item.id, { targetDriveId: activeDriveId, parentId: targetParentId, name: item.name });
+          completed.push(copied);
+        }
+      }
+      const normalized = completed.filter((item) => item && item.id).map(normalizeCloudDriveItem);
+      if (normalized.length && targetParentId === currentId) upsertCloudItems(activeDriveId, currentId, normalized);
+      const acceptedCount = completed.filter((item) => item?.accepted).length;
+      if (fileClipboard.mode === 'cut') {
+        if (fileClipboard.driveId === activeDriveId && fileClipboard.parentId === currentId && targetParentId !== currentId && movedIds.length) removeCloudItemsByIds(activeDriveId, currentId, movedIds);
+        setFileClipboard(null);
+      }
+      await loadItems(activeDriveId, currentId, { force: true, background: true, keepItems: true, preserveCurrent: true });
+      const expectedNames = new Set(fileClipboard.items.map((item) => item.name).filter(Boolean));
+      const appearsInCurrentDir = targetParentId === currentId && fileClipboard.mode === 'copy'
+        && expectedNames.size > 0
+        && itemsRef.current.some((item) => expectedNames.has(item.name));
+      const title = fileClipboard.mode === 'cut' ? '已移动' : (normalized.length || appearsInCurrentDir ? '复制完成' : '已开始复制');
+      notify?.({ title, message: `${normalized.length || acceptedCount || completed.length} 项` });
+    } catch (pasteError) {
+      notify?.({ type: 'error', title: fileClipboard.mode === 'cut' ? '移动失败' : '复制失败', message: friendlyError(pasteError.message), duration: 5200 });
+    } finally {
+      setBusy('');
+    }
+  };
+
+  useEffect(() => {
+    const handleCloudShortcuts = (event) => {
+      if (!hasMountedDrive || renamingId || pendingCreate || deleteDialog || configDialog || sharedDialog) return;
+      if (!event.ctrlKey && !event.metaKey) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+      const key = event.key.toLowerCase();
+      if (key === 'c' && selectedItems.length) {
+        event.preventDefault();
+        copySelected('copy');
+      } else if (key === 'x' && selectedItems.length) {
+        event.preventDefault();
+        copySelected('cut');
+      } else if (key === 'v' && canPasteCloudClipboard) {
+        event.preventDefault();
+        pasteClipboard();
+      }
+    };
+    window.addEventListener('keydown', handleCloudShortcuts);
+    return () => window.removeEventListener('keydown', handleCloudShortcuts);
+  }, [canPasteCloudClipboard, configDialog, deleteDialog, sharedDialog, hasMountedDrive, pendingCreate, renamingId, selectedItems, fileClipboard, activeDriveId, currentId, busy]);
+
+  const downloadItem = (item) => {
+    if (!item || item.type === 'd') return;
+    transferManager.startCloudDownload({ driveId: activeDriveId, item });
+  };
+
+  const openItem = (item) => {
+    cancelScheduledRename();
+    if (item.type === 'd') navigateToItem(item);
+    else downloadItem(item);
+  };
+
+  const toggleSelectItem = (event, item) => {
+    cancelScheduledRename();
+    setSelectedIds((current) => {
+      if (event.ctrlKey || event.metaKey) {
+        return current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id];
+      }
+      return current.includes(item.id) && current.length === 1 ? current : [item.id];
+    });
+  };
+
+  const startSelectionBox = (event) => {
+    if (event.button !== 0 || pendingCreate || renamingId) return;
+    const target = event.target instanceof Element ? event.target : null;
+    const row = target?.closest('.file-entry');
+    const fromRowLeftEdge = row ? event.clientX - row.getBoundingClientRect().left <= 48 : false;
+    if (!target || target.closest('input, textarea, .files-head, .files-toolbar, .files-row-head, .files-drop-hint, .files-statusbar, .files-context-menu, .transfer-queue-panel')) return;
+    if (target.closest('button') && !fromRowLeftEdge) return;
+    if (row && !fromRowLeftEdge) return;
+    event.preventDefault();
+    setContextMenu(null);
+    selectionBaseRef.current = event.ctrlKey || event.metaKey ? selectedIds : [];
+    if (!event.ctrlKey && !event.metaKey) setSelectedIds([]);
+    setSelectionBox({
+      active: true,
+      startX: event.clientX,
+      startY: event.clientY,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
+  const changeFileSort = (key) => {
+    setFileSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  };
+
+  const startFileColumnResize = (event, key) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = fileColumnWidths[key];
+    let latestWidths = fileColumnWidths;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    const handleMove = (moveEvent) => {
+      const nextWidth = Math.max(FILE_COLUMN_MIN_WIDTHS[key], Math.round(startWidth + moveEvent.clientX - startX));
+      setFileColumnWidths((current) => {
+        latestWidths = { ...current, [key]: nextWidth };
+        return latestWidths;
+      });
+    };
+    const stopResize = () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', stopResize);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      try {
+        window.localStorage.setItem(CLOUD_COLUMN_STORAGE_KEY, JSON.stringify(latestWidths));
+      } catch {
+        // Column resize still works for this session.
+      }
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', stopResize);
+  };
+
+  return (
+    <section className="page cloud-page">
+      <div className="cloud-drive-layout">
+        <aside className="cloud-drive-sidebar">
+          <div className="cloud-drive-sidebar-title">
+            <Cloud size={18} />
+            <strong>挂载</strong>
+          </div>
+          <button className={!activeDriveId ? 'active' : ''} onClick={connectDrive} type="button">
+            <Plus size={17} />
+            <span>添加 OneDrive</span>
+          </button>
+          <button disabled={!drives.some((drive) => drive.provider === 'onedrive')} onClick={openSharedDialog} type="button">
+            <Link size={17} />
+            <span>添加共享文件夹</span>
+          </button>
+          <button onClick={openConfigDialog} type="button">
+            <Settings2 size={17} />
+            <span>高级配置</span>
+          </button>
+          {drives.map((drive) => (
+            <button className={drive.id === activeDriveId ? 'active' : ''} key={drive.id} onClick={() => {
+              setActiveDriveId(drive.id);
+              setPathStack([{ id: 'root', name: 'OneDrive' }]);
+              setCurrentItem({ id: 'root', name: 'OneDrive' });
+            }} type="button">
+              <Cloud className="cloud-drive-icon" size={17} strokeWidth={2.2} />
+              <span title={drive.accountName || drive.displayName}>{drive.displayName || drive.accountName || 'OneDrive'}</span>
+            </button>
+          ))}
+          {activeDrive && (
+            <div className="cloud-quota-card">
+              <div>
+                <span>储存空间</span>
+                <strong>
+                  {activeDriveQuotaTotal > 0
+                    ? `${formatBytes(activeDriveQuotaUsed)} / ${formatBytes(activeDriveQuotaTotal)}`
+                    : '容量未知'}
+                </strong>
+              </div>
+              <i><b style={{ width: `${activeDriveQuotaPercent}%` }} /></i>
+            </div>
+          )}
+        </aside>
+        <div className={['cloud-files-panel', !hasMountedDrive ? 'empty-mode' : ''].filter(Boolean).join(' ')}>
+          <div className="files-head cloud-files-head">
+            <div className="files-nav-controls">
+              <button disabled={pathStack.length <= 1} onClick={() => navigateToCrumb(pathStack.length - 2)} type="button"><ChevronLeft size={18} /></button>
+              <button disabled type="button"><ChevronRight size={18} /></button>
+              <button disabled={!activeDriveId || loading} onClick={() => loadItems(activeDriveId, currentId)} type="button"><RotateCw size={17} /></button>
+            </div>
+            <div className="files-location-box">
+              <div className="files-breadcrumb" aria-label="当前路径">
+                {pathStack.map((segment, index) => (
+                  <span key={`${segment.id}-${index}`}>
+                    {index > 0 && <ChevronRight size={15} />}
+                    <button className={index === pathStack.length - 1 ? 'active' : ''} onClick={() => navigateToCrumb(index)} type="button">
+                      {index === 0 ? '/' : segment.name}
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+            <label className="files-search-box">
+              <Search size={18} />
+              <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索" />
+            </label>
+            <button className="files-window-close" disabled={!activeDriveId || busy} onClick={disconnectDrive} title="移除当前挂载" type="button"><X size={19} /></button>
+          </div>
+          {hasMountedDrive && (
+            <div className="files-toolbar">
+              <div className="files-toolbar-group files-create-actions">
+                <button disabled={!activeDriveId || busy} onClick={uploadFilesByLocalProcess} type="button"><Upload size={17} />上传文件</button>
+                <button disabled={!activeDriveId || busy} onClick={createFolder} type="button"><Folder size={17} />新建文件夹</button>
+              </div>
+              <div className="files-toolbar-group files-operate-actions">
+                <button disabled={busy || !selectedItems.some((item) => item.type !== 'd')} onClick={() => selectedItems.filter((item) => item.type !== 'd').forEach(downloadItem)} type="button"><Download size={17} />下载</button>
+                <button disabled={busy || selectedItems.length === 0} onClick={() => copySelected('copy')} type="button"><Copy size={17} />复制</button>
+                <button disabled={busy || selectedItems.length === 0} onClick={() => copySelected('cut')} type="button"><Scissors size={17} />剪切</button>
+                <button disabled={busy || !canPasteCloudClipboard} onClick={() => pasteClipboard()} type="button"><Clipboard size={17} />粘贴</button>
+                <button disabled={busy || selectedItems.length === 0} onClick={() => requestDeleteItems()} type="button"><Trash2 size={17} />删除</button>
+              </div>
+            </div>
+          )}
+          {!hasMountedDrive ? (
+            <div className="cloud-empty-state">
+              <Cloud size={40} />
+              <strong>还没有挂载 OneDrive</strong>
+              <span>点击后跳转 Microsoft 登录，授权完成会自动回到北冥。</span>
+              <button disabled={busy === 'onedrive-auth'} onClick={connectDrive} type="button">{busy === 'onedrive-auth' ? '打开中...' : '挂载 OneDrive'}</button>
+            </div>
+          ) : (
+          <div
+            className="files-table cloud-files-table"
+            onContextMenu={(event) => {
+              const target = event.target instanceof Element ? event.target : null;
+              if (target?.closest('.file-entry')) return;
+              event.preventDefault();
+              setSelectedIds([]);
+              setContextMenu({ item: null, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 160) });
+            }}
+            onClick={() => setContextMenu(null)}
+            onMouseDown={startSelectionBox}
+            ref={cloudFilesTableRef}
+          >
+            <div className="files-row files-row-head" style={cloudFileColumnStyle}>
+              {FILE_COLUMNS.map(({ key, label }) => (
+                <div className="files-head-cell" key={key}>
+                  <button className={fileSort.key === key ? `active ${fileSort.direction}` : ''} onClick={() => changeFileSort(key)} type="button">
+                    <span>{label}</span>
+                    <ChevronDown size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            {pendingCreate && (
+              <div className="files-row file-entry selected creating" data-file-kind="dir" style={cloudFileColumnStyle}>
+                <button className="file-name" type="button">
+                  <FileVisualIcon isDir name={pendingCreate.name} />
+                  <input
+                    autoFocus
+                    className="file-rename-input"
+                    onBlur={submitCreate}
+                    onChange={(event) => setPendingCreate((current) => current ? { ...current, name: event.target.value } : current)}
+                    onFocus={(event) => event.target.select()}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') submitCreate();
+                      if (event.key === 'Escape') setPendingCreate(null);
+                    }}
+                    value={pendingCreate.name}
+                  />
+                </button>
+                <span>-</span>
+                <span>文件夹</span>
+                <span>-</span>
+              </div>
+            )}
+            {visibleItems.map((item) => {
+              const isDir = item.type === 'd';
+              const selected = selectedIds.includes(item.id);
+              return (
+                <div
+                  className={['files-row file-entry', selected ? 'selected' : ''].filter(Boolean).join(' ')}
+                  data-file-id={item.id}
+                  data-file-kind={isDir ? 'dir' : 'file'}
+                  key={item.id}
+                  onClick={(event) => toggleSelectItem(event, item)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setSelectedIds((current) => current.includes(item.id) ? current : [item.id]);
+                    setContextMenu({ item, x: Math.min(event.clientX, window.innerWidth - 190), y: Math.min(event.clientY, window.innerHeight - 190) });
+                  }}
+                  onDoubleClick={(event) => {
+                    if (renamingId) return;
+                    const target = event.target instanceof Element ? event.target : null;
+                    if (target?.closest('.file-name')) return;
+                    openItem(item);
+                  }}
+                  style={cloudFileColumnStyle}
+                >
+                  <button
+                    className="file-name"
+                    onClick={(event) => scheduleRenameFromNameClick(event, item, selected)}
+                    onDoubleClick={(event) => {
+                      event.stopPropagation();
+                      cancelScheduledRename();
+                      if (!renamingId) openItem(item);
+                    }}
+                    type="button"
+                  >
+                    <FileVisualIcon isDir={isDir} name={item.name} />
+                    {renamingId === item.id ? (
+                      <input
+                        autoFocus
+                        className="file-rename-input"
+                        onBlur={() => submitRename(item)}
+                        onChange={(event) => setRenameValue(event.target.value)}
+                        onFocus={(event) => event.target.select()}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') submitRename(item);
+                          if (event.key === 'Escape') setRenamingId('');
+                        }}
+                        style={{ width: getRenameInputWidth(renameValue || item.name) }}
+                        value={renameValue}
+                      />
+                    ) : (
+                      <span title={item.name}>
+                        {item.name}
+                        {item.shortcut && <em className="file-shortcut-badge">快捷方式</em>}
+                      </span>
+                    )}
+                  </button>
+                  <span>{formatCloudFileTime(item.modifiedAt)}</span>
+                  <span>{item.shortcut ? '快捷方式' : formatFileKind(item.name, isDir)}</span>
+                  <span>{isDir ? '-' : formatBytes(Number(item.size || 0))}</span>
+                </div>
+              );
+            })}
+            {(loading || (activeDriveId && !itemsReady)) && <div className="files-loading-state"><i></i><span>加载中</span></div>}
+            {!loading && error && <div className="files-empty error">{error}</div>}
+            {!loading && itemsReady && !error && activeDriveId && items.length === 0 && !pendingCreate && <div className="files-empty">当前目录为空</div>}
+            {!loading && itemsReady && !error && activeDriveId && items.length > 0 && visibleItems.length === 0 && !pendingCreate && <div className="files-empty">没有匹配的文件</div>}
+            {selectionBox?.active && (
+              <div
+                className="file-selection-box"
+                style={{
+                  left: `${Math.min(selectionBox.startX, selectionBox.x)}px`,
+                  top: `${Math.min(selectionBox.startY, selectionBox.y)}px`,
+                  width: `${Math.abs(selectionBox.x - selectionBox.startX)}px`,
+                  height: `${Math.abs(selectionBox.y - selectionBox.startY)}px`,
+                }}
+              ></div>
+            )}
+          </div>
+          )}
+          {hasMountedDrive && (
+          <div className="files-pagination cloud-files-summary">
+            <span className="cloud-files-page-summary">
+              <em>{activeDrive ? `选中 ${selectedItems.length} 项（共 ${items.length} 项）` : '未挂载 OneDrive'}</em>
+            </span>
+          </div>
+          )}
+          {hasMountedDrive && contextMenu && (
+            <div className="files-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
+              {!contextMenu.item ? (
+                <>
+                  <button disabled={!activeDriveId || busy} onClick={() => { uploadFilesByLocalProcess(); setContextMenu(null); }} type="button">
+                    <Upload size={16} />上传文件
+                  </button>
+                  <button disabled={!activeDriveId || busy} onClick={() => { createFolder(); setContextMenu(null); }} type="button">
+                    <Folder size={16} />新建文件夹
+                  </button>
+                  <button disabled={loading} onClick={() => { loadItems(activeDriveId, currentId); setContextMenu(null); }} type="button">
+                    <RotateCw size={16} />刷新
+                  </button>
+                  <button disabled={busy || !canPasteCloudClipboard} onClick={() => { pasteClipboard(); setContextMenu(null); }} type="button">
+                    <Clipboard size={16} />粘贴
+                  </button>
+                </>
+              ) : (
+                <>
+                  {contextMenu.item.type === 'd' && (
+                    <button onClick={() => { navigateToItem(contextMenu.item); setContextMenu(null); }} type="button">
+                      <Folder size={16} />打开
+                    </button>
+                  )}
+                  {contextMenu.item.type !== 'd' && (
+                    <button disabled={busy} onClick={() => { downloadItem(contextMenu.item); setContextMenu(null); }} type="button">
+                      <Download size={16} />下载
+                    </button>
+                  )}
+                  <span className="context-menu-separator" />
+                  <button disabled={busy} onClick={() => { copySelected('copy', selectedIds.includes(contextMenu.item.id) ? selectedItems : [contextMenu.item]); setContextMenu(null); }} type="button">
+                    <Copy size={16} />复制
+                  </button>
+                  <button disabled={busy} onClick={() => { copySelected('cut', selectedIds.includes(contextMenu.item.id) ? selectedItems : [contextMenu.item]); setContextMenu(null); }} type="button">
+                    <Scissors size={16} />剪切
+                  </button>
+                  {canPasteCloudClipboard && contextMenu.item.type === 'd' && (
+                    <button disabled={busy} onClick={() => { pasteClipboard(contextMenu.item.id); setContextMenu(null); }} type="button">
+                      <Clipboard size={16} />粘贴到此文件夹
+                    </button>
+                  )}
+                  <span className="context-menu-separator" />
+                  <button disabled={busy} onClick={() => { startRename(contextMenu.item); setContextMenu(null); }} type="button">
+                    <PencilLine size={16} />重命名
+                  </button>
+                  <button className="danger" disabled={busy} onClick={() => { requestDeleteItems([contextMenu.item]); setContextMenu(null); }} type="button">
+                    <Trash2 size={16} />删除
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+          {deleteDialog && (
+            <div
+              className="file-confirm-layer"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) setDeleteDialog(null);
+                event.stopPropagation();
+              }}
+            >
+              <div className="file-confirm-dialog" role="dialog" aria-modal="true" aria-label="删除文件确认">
+                <div className="file-confirm-head">
+                  <i>i</i>
+                  <strong>{deleteDialog.items.length === 1 ? `删除 ${deleteDialog.items[0].name}` : `删除 ${deleteDialog.items.length} 项`}</strong>
+                  <button onClick={() => setDeleteDialog(null)} type="button"><X size={21} /></button>
+                </div>
+                <p>确定要删除所选文件？删除后无法恢复。</p>
+                <div className="file-confirm-actions">
+                  <button onClick={() => setDeleteDialog(null)} type="button">取消</button>
+                  <button className="danger" onClick={() => deleteItems()} type="button">彻底删除</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      {configDialog && (
+        <div className="modal-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !configDialog.saving) setConfigDialog(null);
+        }}>
+          <section className="cloud-config-dialog" role="dialog" aria-modal="true" aria-label="OneDrive 配置">
+            <div className="cloud-config-head">
+              <Cloud size={20} />
+              <div>
+                <strong>OneDrive 配置</strong>
+                <span>下载加速和传输并发</span>
+              </div>
+            </div>
+            <label>
+              <span>下载 CDN 域名</span>
+              <input
+                autoFocus
+                value={configDialog.cdnHost}
+                onChange={(event) => setConfigDialog((current) => current ? { ...current, cdnHost: event.target.value } : current)}
+                placeholder="cdn1.example.com cdn2.example.com"
+              />
+              <em className="cloud-config-hint">可填多个域名，用空格、逗号或换行分隔；下载分片会轮询这些域名。</em>
+            </label>
+            <label>
+              <span>下载分片数</span>
+              <input
+                min="1"
+                max={MAX_DOWNLOAD_THREADS}
+                type="number"
+                value={configDialog.downloadThreads}
+                onChange={(event) => setConfigDialog((current) => current ? { ...current, downloadThreads: event.target.value } : current)}
+                placeholder="自动"
+              />
+              <em className="cloud-config-hint">{`留空自动；可填 1-${MAX_DOWNLOAD_THREADS}。`}</em>
+            </label>
+            <label>
+              <span>上传并发通道</span>
+              <input
+                min="1"
+                max={MAX_UPLOAD_THREADS}
+                type="number"
+                value={configDialog.uploadThreads}
+                onChange={(event) => setConfigDialog((current) => current ? { ...current, uploadThreads: event.target.value } : current)}
+                placeholder="自动"
+              />
+              <em className="cloud-config-hint">{`留空自动；可填 1-${MAX_UPLOAD_THREADS}。OneDrive 单文件顺序上传，多文件可并发。`}</em>
+            </label>
+            {configDialog.error && <div className="cloud-config-error">{configDialog.error}</div>}
+            <div className="cloud-config-actions">
+              <button disabled={configDialog.saving} onClick={() => setConfigDialog(null)} type="button">取消</button>
+              <button disabled={configDialog.saving} onClick={submitConfig} type="button">{configDialog.saving ? '保存中...' : '保存'}</button>
+            </div>
+          </section>
+        </div>
+      )}
+      {sharedDialog && (
+        <div className="modal-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !sharedDialog.saving) setSharedDialog(null);
+        }}>
+          <section className="cloud-config-dialog" role="dialog" aria-modal="true" aria-label="添加共享文件夹">
+            <div className="cloud-config-head">
+              <Link size={20} />
+              <div>
+                <strong>添加共享文件夹</strong>
+                <span>把别人共享的 OneDrive 文件夹挂到云盘列表</span>
+              </div>
+            </div>
+            <label>
+              <span>共享链接</span>
+              <input
+                autoFocus
+                value={sharedDialog.url}
+                onChange={(event) => setSharedDialog((current) => current ? { ...current, url: event.target.value } : current)}
+                placeholder="https://1drv.ms/f/..."
+              />
+              <em className="cloud-config-hint">需要这是当前账号有权限访问的 OneDrive 共享文件夹。</em>
+            </label>
+            <label>
+              <span>显示名称</span>
+              <input
+                value={sharedDialog.name}
+                onChange={(event) => setSharedDialog((current) => current ? { ...current, name: event.target.value } : current)}
+                placeholder="留空使用共享文件夹名称"
+              />
+            </label>
+            {sharedDialog.error && <div className="cloud-config-error">{sharedDialog.error}</div>}
+            <div className="cloud-config-actions">
+              <button disabled={sharedDialog.saving} onClick={() => setSharedDialog(null)} type="button">取消</button>
+              <button disabled={sharedDialog.saving || !sharedDialog.url.trim()} onClick={submitSharedFolder} type="button">{sharedDialog.saving ? '添加中...' : '添加'}</button>
+            </div>
+          </section>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ContainerFileModal({ container, node, notify, transferManager, onClose }) {
   useBodyScrollLock();
   const initialPath = normalizeContainerPath(container.config?.workingDir || '/');
   const [path, setPath] = useState(initialPath);
@@ -1276,21 +4301,15 @@ function ContainerFileModal({ container, node, notify, onClose }) {
   const [fileSort, setFileSort] = useState({ key: 'name', direction: 'asc' });
   const [fileClipboard, setFileClipboard] = useState(null);
   const [selectionBox, setSelectionBox] = useState(null);
-  const [uploadProgress, setUploadProgress] = useState(null);
-  const [downloadProgress, setDownloadProgress] = useState(null);
   const [offlineWritable, setOfflineWritable] = useState(false);
   const [pathHistory, setPathHistory] = useState({ back: [], forward: [] });
   const [fileColumnWidths, setFileColumnWidths] = useState(readFileColumnWidths);
   const uploadRef = useRef(null);
-  const uploadAbortRef = useRef(null);
-  const downloadAbortRef = useRef(null);
-  const downloadIdRef = useRef('');
-  const uploadQueueRef = useRef(Promise.resolve());
-  const activeUploadIdsRef = useRef(new Set());
   const pathRef = useRef(path);
   const filesTableRef = useRef(null);
   const breadcrumbRef = useRef(null);
   const monacoEditorRef = useRef(null);
+  const mountedRef = useRef(true);
   const selectionBaseRef = useRef([]);
   const renameSubmittingRef = useRef(false);
   const dropHintTimerRef = useRef(null);
@@ -1303,8 +4322,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
   const fileColumnTemplate = FILE_COLUMNS.map((column) => `${fileColumnWidths[column.key]}px`).join(' ');
   const fileColumnStyle = useMemo(() => ({ gridTemplateColumns: fileColumnTemplate }), [fileColumnTemplate]);
   const visibleItems = useMemo(() => {
-    const keyword = searchQuery.trim().toLowerCase();
-    const filtered = items.filter((item) => item.name.toLowerCase().includes(keyword));
+    const filtered = items.filter((item) => matchesPinyinSearch(item.name, searchQuery));
     const direction = fileSort.direction === 'desc' ? -1 : 1;
     const getValue = (item) => {
       if (fileSort.key === 'modified') return Number(item.modified || 0);
@@ -1344,7 +4362,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
     setLoading(true);
     setError('');
     try {
-      const result = await fetchContainerFiles(node.id, container.id, nextPath);
+      const result = await fetchContainerFiles(node, container.id, nextPath);
       setItems(result.items || []);
       setPath(normalizeContainerPath(result.path || nextPath));
       setOfflineWritable(Boolean(result.writable));
@@ -1367,17 +4385,9 @@ function ContainerFileModal({ container, node, notify, onClose }) {
     pathRef.current = path;
   }, [path]);
 
-  useEffect(() => {
-    const cleanupBeforeUnload = () => {
-      const uploadIds = Array.from(activeUploadIdsRef.current);
-      if (uploadIds.length) beaconCleanupContainerUploads(node.id, container.id, uploadIds);
-    };
-    window.addEventListener('beforeunload', cleanupBeforeUnload);
-    return () => {
-      window.removeEventListener('beforeunload', cleanupBeforeUnload);
-      cleanupBeforeUnload();
-    };
-  }, [container.id, node.id]);
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
 
   useEffect(() => {
     loadFiles(path);
@@ -1451,7 +4461,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
     try {
       const existingItems = normalizedTargetPath === normalizeContainerPath(path)
         ? items
-        : (await fetchContainerFiles(node.id, container.id, normalizedTargetPath)).items || [];
+        : (await fetchContainerFiles(node, container.id, normalizedTargetPath)).items || [];
       const existingNames = new Set(existingItems.map((item) => item.name));
       const conflicts = uploadItems.filter((file) => existingNames.has(file.name));
       if (conflicts.length) {
@@ -1470,14 +4480,23 @@ function ContainerFileModal({ container, node, notify, onClose }) {
   };
 
   const enqueueUploadFiles = (uploadItems, targetPath) => {
-    if (uploadAbortRef.current) {
-      notify?.({ title: '已加入上传队列', message: uploadItems.length > 1 ? `${uploadItems.length} 个文件` : uploadItems[0].name });
-    }
-    const task = uploadQueueRef.current
-      .catch(() => undefined)
-      .then(() => runUploadBatch(uploadItems, targetPath));
-    uploadQueueRef.current = task.catch(() => undefined);
-    return task;
+    return transferManager.startUpload({
+      node,
+      container,
+      files: uploadItems,
+      targetPath,
+      onComplete: async (completedPath) => {
+        if (!mountedRef.current) return;
+        const currentPath = normalizeContainerPath(pathRef.current);
+        const normalizedCompletedPath = normalizeContainerPath(completedPath);
+        if (currentPath === normalizedCompletedPath) {
+          await loadFiles(currentPath);
+        } else {
+          await loadFiles(currentPath);
+          notify?.({ title: '上传完成', message: `已上传到 ${normalizedCompletedPath}` });
+        }
+      },
+    });
   };
 
   const confirmOverwriteUpload = () => {
@@ -1487,115 +4506,10 @@ function ContainerFileModal({ container, node, notify, onClose }) {
     enqueueUploadFiles(files, targetPath);
   };
 
-  const runUploadBatch = async (files, targetPath) => {
-    const controller = new AbortController();
-    uploadAbortRef.current = controller;
-    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-    let uploadedBytes = 0;
-    const startedAt = performance.now();
-    const batchUploadIds = new Set();
-    const cleanupBatchUploads = async () => {
-      const uploadIds = Array.from(batchUploadIds);
-      if (!uploadIds.length) return;
-      uploadIds.forEach((uploadId) => activeUploadIdsRef.current.delete(uploadId));
-      try {
-        await cleanupContainerUploads(node.id, container.id, uploadIds);
-      } catch {
-        beaconCleanupContainerUploads(node.id, container.id, uploadIds);
-      }
-    };
-    try {
-      setUploadProgress({ current: files[0]?.name || '文件', index: 0, total: files.length, percent: 0, speed: '0 B/s' });
-      const fileWorkerCount = Math.min(totalBytes > 512 * 1024 * 1024 ? 2 : 4, files.length);
-      const chunkWorkerCap = Math.max(2, Math.floor(16 / fileWorkerCount));
-      const workers = Array.from({ length: fileWorkerCount }, async (_, workerIndex) => {
-        for (let index = workerIndex; index < files.length; index += fileWorkerCount) {
-          if (controller.signal.aborted) return;
-          const file = files[index];
-          setUploadProgress((current) => ({ ...(current || {}), current: file.name, index: index + 1, total: files.length }));
-          await uploadFileInChunks(file, targetPath, controller.signal, (uploadId) => {
-            batchUploadIds.add(uploadId);
-            activeUploadIdsRef.current.add(uploadId);
-          }, (delta) => {
-            uploadedBytes += delta;
-            const percent = totalBytes ? Math.min(99, Math.round((uploadedBytes / totalBytes) * 100)) : 100;
-            const elapsedSeconds = Math.max(0.3, (performance.now() - startedAt) / 1000);
-            setUploadProgress((current) => ({ ...(current || {}), percent, speed: `${formatBytes(uploadedBytes / elapsedSeconds)}/s` }));
-          }, chunkWorkerCap);
-        }
-      });
-      await Promise.all(workers);
-      setUploadProgress((current) => ({ ...(current || {}), percent: 100 }));
-      await new Promise((resolve) => setTimeout(resolve, 180));
-      if (pathRef.current === targetPath) await loadFiles(targetPath);
-      notify?.({ title: '上传成功', message: files.length > 1 ? `${files.length} 个文件` : files[0].name });
-    } catch (uploadError) {
-      await cleanupBatchUploads();
-      if (uploadError.name === 'AbortError') {
-        notify?.({ title: '已取消上传', message: files.length > 1 ? `${files.length} 个文件` : files[0].name });
-      } else {
-        notify?.({ type: 'error', title: '上传失败', message: friendlyError(uploadError.message), duration: 4600 });
-      }
-    } finally {
-      batchUploadIds.forEach((uploadId) => activeUploadIdsRef.current.delete(uploadId));
-      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
-      setUploadProgress(null);
-    }
-  };
-
-  const cancelUpload = () => {
-    uploadAbortRef.current?.abort();
-  };
-
-  const uploadFileInChunks = async (file, targetPath, signal, onUploadId, onProgress, workerCap = 8) => {
-    const { chunkSize, workerCount } = getUploadPlan(file.size, workerCap);
-    const uploadId = `${Date.now()}-${Math.random().toString(16).slice(2)}-${file.name}`;
-    onUploadId(uploadId);
-    const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
-    let nextChunk = 0;
-    const uploadChunkWithRetry = async (payload) => {
-      let lastError;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        if (signal.aborted) throw new DOMException('Upload cancelled', 'AbortError');
-        try {
-          return await uploadContainerFileChunkBinary(node.id, container.id, payload);
-        } catch (error) {
-          lastError = error;
-          if (attempt === 2 || signal.aborted) break;
-          await new Promise((resolve) => setTimeout(resolve, 260 * (attempt + 1)));
-        }
-      }
-      throw lastError;
-    };
-    const uploadChunk = async () => {
-      while (nextChunk < totalChunks) {
-        if (signal.aborted) throw new DOMException('Upload cancelled', 'AbortError');
-        const chunkIndex = nextChunk;
-        nextChunk += 1;
-        const start = chunkIndex * chunkSize;
-        const end = Math.min(file.size, start + chunkSize);
-        const chunk = file.slice(start, end);
-        await uploadChunkWithRetry({
-          uploadId,
-          path: targetPath,
-          name: file.name,
-          chunkIndex,
-          totalChunks,
-          chunkSize,
-          chunk,
-          size: file.size,
-          signal,
-        });
-        onProgress(end - start);
-      }
-    };
-    await Promise.all(Array.from({ length: workerCount }, uploadChunk));
-  };
-
   const moveItem = async (item, targetPath) => {
     const source = joinContainerPath(path, item.name);
     if (source === targetPath || path === targetPath) return;
-    await runFileAction('移动', () => renameContainerFile(node.id, container.id, source, item.name, targetPath));
+    await runFileAction('移动', () => renameContainerFile(node, container.id, source, item.name, targetPath));
   };
 
   const handleNativeDrop = async (event, targetPath = path) => {
@@ -1612,9 +4526,15 @@ function ContainerFileModal({ container, node, notify, onClose }) {
     }
     const payload = event.dataTransfer.getData('application/x-beiming-file');
     if (!payload) return;
-    const item = JSON.parse(payload);
+    let item;
+    try {
+      item = JSON.parse(payload);
+    } catch {
+      return;
+    }
+    if (!item?.name || !item?.path) return;
     if (item.path === targetPath || joinContainerPath(targetPath, item.name) === item.path) return;
-    await runFileAction('移动', () => renameContainerFile(node.id, container.id, item.path, item.name, targetPath));
+    await runFileAction('移动', () => renameContainerFile(node, container.id, item.path, item.name, targetPath));
   };
 
   const handleDragOver = (event, targetPath = path) => {
@@ -1699,7 +4619,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
   const startSelectionBox = (event) => {
     if (event.button !== 0 || dragItem || externalDragging || renamingName) return;
     const target = event.target instanceof Element ? event.target : null;
-    if (!target || target.closest('button, input, textarea, .files-head, .files-toolbar, .files-row-head, .files-drop-hint, .files-statusbar, .files-context-menu, .file-upload-progress, .file-drop-tooltip')) return;
+    if (!target || target.closest('button, input, textarea, .files-head, .files-toolbar, .files-row-head, .files-drop-hint, .files-statusbar, .files-context-menu, .transfer-queue-panel, .file-drop-tooltip')) return;
     event.preventDefault();
     closeContextMenu();
     cancelScheduledRename();
@@ -1856,7 +4776,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
     renameSubmittingRef.current = true;
     const label = pendingCreate.action === 'mkdir' ? '新建文件夹' : '新建文件';
     try {
-      await createContainerFileEntry(node.id, container.id, { action: pendingCreate.action, path, name: nextName });
+      await createContainerFileEntry(node, container.id, { action: pendingCreate.action, path, name: nextName });
       setPendingCreate(null);
       await loadFiles(path);
       notify?.({ title: `${label}成功`, message: nextName });
@@ -1875,7 +4795,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
       return;
     }
     renameSubmittingRef.current = true;
-    await runFileAction('重命名', () => renameContainerFile(node.id, container.id, joinContainerPath(path, item.name), nextName));
+    await runFileAction('重命名', () => renameContainerFile(node, container.id, joinContainerPath(path, item.name), nextName));
     renameSubmittingRef.current = false;
     cancelRename();
   };
@@ -1914,7 +4834,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
     setDeleteDialog(null);
     runFileAction('删除', async () => {
       for (const item of itemsToDelete) {
-        await deleteContainerFile(node.id, container.id, joinContainerPath(path, item.name));
+        await deleteContainerFile(node, container.id, joinContainerPath(path, item.name));
       }
     });
   };
@@ -1952,7 +4872,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
     });
     closeContextMenu();
     try {
-      const result = await fetchContainerFileContent(node.id, container.id, filePath);
+      const result = await fetchContainerFileContent(node, container.id, filePath);
       const text = base64ToText(result.contentBase64 || '');
       setEditorState((current) => current?.path === filePath ? {
         ...current,
@@ -1973,7 +4893,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
     if (!editorState || editorState.loading || editorState.saving || readOnly) return;
     setEditorState((current) => current ? { ...current, saving: true, error: '' } : current);
     try {
-      await createContainerFileEntry(node.id, container.id, {
+      await createContainerFileEntry(node, container.id, {
         action: 'upload',
         path: editorState.dir,
         name: editorState.item.name,
@@ -2126,9 +5046,9 @@ function ContainerFileModal({ container, node, notify, onClose }) {
       for (const item of fileClipboard.items) {
         if (fileClipboard.mode === 'cut') {
           if (item.path === path || joinContainerPath(path, item.name) === item.path) continue;
-          await renameContainerFile(node.id, container.id, item.path, item.name, path);
+          await renameContainerFile(node, container.id, item.path, item.name, path);
         } else {
-          await copyContainerFile(node.id, container.id, item.path, path);
+          await copyContainerFile(node, container.id, item.path, path);
         }
       }
       if (fileClipboard.mode === 'cut') setFileClipboard(null);
@@ -2153,7 +5073,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
     setExtractDialog(null);
     runFileAction('解压', async () => {
       for (const item of archives) {
-        await extractContainerFile(node.id, container.id, joinContainerPath(path, item.name), targetPath, encoding);
+        await extractContainerFile(node, container.id, joinContainerPath(path, item.name), targetPath, encoding);
       }
     });
   };
@@ -2162,121 +5082,32 @@ function ContainerFileModal({ container, node, notify, onClose }) {
 
   const toggleSelectItem = (event, item) => {
     closeContextMenu();
+    cancelScheduledRename();
     setSelectedNames((current) => {
       if (event.ctrlKey || event.metaKey) {
         return current.includes(item.name) ? current.filter((name) => name !== item.name) : [...current, item.name];
       }
-      return current.includes(item.name) && current.length === 1 ? [] : [item.name];
+      return current.includes(item.name) && current.length === 1 ? current : [item.name];
     });
   };
 
   const downloadItem = async (item) => {
-    if (downloadProgress) {
-      notify?.({ title: '已有下载任务', message: '请等待当前下载完成或取消' });
-      return;
-    }
     const filePath = joinContainerPath(path, item.name);
-    const controller = new AbortController();
-    const downloadId = `${Date.now()}-${Math.random().toString(16).slice(2)}-${item.name}`;
-    downloadAbortRef.current = controller;
-    downloadIdRef.current = downloadId;
-    try {
-      const info = await fetchContainerFileDownloadInfo(node.id, container.id, filePath, downloadId);
-      await downloadFileInRanges(filePath, info.name || item.name, info.size || Number(item.size || 0), controller.signal, downloadId);
-      notify?.({ title: '下载完成', message: info.name || item.name });
-    } catch (downloadError) {
-      if (downloadError.name === 'AbortError') {
-        notify?.({ title: '已取消下载', message: item.name });
-      } else {
-        notify?.({ type: 'error', title: '下载失败', message: friendlyError(downloadError.message), duration: 4600 });
-      }
-    } finally {
-      if (downloadAbortRef.current === controller) downloadAbortRef.current = null;
-      if (downloadIdRef.current === downloadId) downloadIdRef.current = '';
-      setDownloadProgress(null);
-    }
+    transferManager.startDownload({ node, container, item, filePath });
   };
 
-  const cancelDownload = () => {
-    const downloadId = downloadIdRef.current;
-    downloadAbortRef.current?.abort();
-    if (downloadId) cancelContainerFileDownload(node.id, container.id, downloadId).catch(() => undefined);
-  };
-
-  const downloadFileInRanges = async (filePath, fileName, fileSize, signal, downloadId) => {
-    if (!fileSize) {
-      setDownloadProgress({ current: fileName, percent: 100, speed: '0 B/s · 空文件' });
-      saveBlobFile(new Blob([]), fileName);
+  const openFileItem = (item) => {
+    if (!item) return;
+    const itemPath = joinContainerPath(path, item.name);
+    if (item.type === 'd') {
+      navigateToPath(itemPath);
       return;
     }
-    const { chunkSize, workerCount } = getDownloadPlan(fileSize);
-    const totalChunks = Math.max(1, Math.ceil(fileSize / chunkSize));
-    let downloadedBytes = 0;
-    let nextChunk = 0;
-    let writable = null;
-    let fileHandle = null;
-    let writeQueue = Promise.resolve();
-    const speedSamples = [];
-    const chunks = new Array(totalChunks);
-    if (window.showSaveFilePicker) {
-      fileHandle = await window.showSaveFilePicker({ suggestedName: fileName });
-      writable = await fileHandle.createWritable();
+    if (isEditableTextFile(item.name)) {
+      openTextEditor(item);
+      return;
     }
-    speedSamples.push([performance.now(), 0]);
-    setDownloadProgress({ current: fileName, percent: 0, speed: `0 B/s · ${workerCount} 线程` });
-    const updateProgress = (delta) => {
-      const now = performance.now();
-      downloadedBytes += delta;
-      const percent = fileSize ? Math.min(99, Math.round((downloadedBytes / fileSize) * 100)) : 100;
-      speedSamples.push([now, downloadedBytes]);
-      while (speedSamples.length > 2 && now - speedSamples[0][0] > 1200) {
-        speedSamples.shift();
-      }
-      const first = speedSamples[0] || [now, downloadedBytes];
-      const elapsedSeconds = Math.max(0.12, (now - first[0]) / 1000);
-      const realtimeBytes = Math.max(0, downloadedBytes - first[1]);
-      setDownloadProgress((current) => ({
-        ...(current || {}),
-        percent,
-        speed: `${formatRate(realtimeBytes / elapsedSeconds)} · ${workerCount} 线程`,
-      }));
-    };
-    const worker = async () => {
-      while (nextChunk < totalChunks) {
-        if (signal.aborted) throw new DOMException('Download cancelled', 'AbortError');
-        const chunkIndex = nextChunk;
-        nextChunk += 1;
-        const start = chunkIndex * chunkSize;
-        const end = Math.min(fileSize - 1, start + chunkSize - 1);
-        const pieces = [];
-        let writePosition = start;
-        await streamContainerFileRange(node.id, container.id, filePath, start, end, signal, downloadId, (piece) => {
-          const position = writePosition;
-          writePosition += piece.byteLength;
-          if (writable) {
-            writeQueue = writeQueue.then(() => writable.write({ type: 'write', position, data: piece }));
-          } else {
-            pieces.push(piece);
-          }
-          updateProgress(piece.byteLength);
-        });
-        if (!writable) chunks[chunkIndex] = new Blob(pieces);
-      }
-    };
-    try {
-      await Promise.all(Array.from({ length: workerCount }, worker));
-      updateProgress(0);
-      setDownloadProgress((current) => ({ ...(current || {}), percent: 100 }));
-      if (writable) {
-        await writeQueue;
-        await writable.close();
-      } else {
-        saveBlobFile(new Blob(chunks), fileName);
-      }
-    } catch (error) {
-      if (writable) await writable.abort().catch(() => undefined);
-      throw error;
-    }
+    downloadItem(item);
   };
 
   const segments = path.split('/').filter(Boolean);
@@ -2390,7 +5221,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
           <button disabled={!canWriteFiles || busy} onClick={() => createEntry('touch')} type="button"><FileText size={17} />新建文件</button>
         </div>
         <div className="files-toolbar-group files-operate-actions">
-          <button disabled={!canWriteFiles || busy || !selectedItems.some((item) => item.type !== 'd')} onClick={downloadSelected} type="button"><Download size={17} />下载</button>
+          <button disabled={busy || !selectedItems.some((item) => item.type !== 'd')} onClick={downloadSelected} type="button"><Download size={17} />下载</button>
           <button disabled={!canWriteFiles || busy || selectedItems.length === 0} onClick={() => copySelected('copy')} type="button"><Copy size={17} />复制</button>
           <button disabled={!canWriteFiles || busy || selectedItems.length === 0} onClick={() => copySelected('cut')} type="button"><Scissors size={17} />剪切</button>
           <button disabled={!canWriteFiles || busy || !fileClipboard?.items?.length} onClick={pasteClipboard} type="button"><Clipboard size={17} />粘贴</button>
@@ -2438,13 +5269,13 @@ function ContainerFileModal({ container, node, notify, onClose }) {
                 onChange={(event) => setPendingCreate((current) => current ? { ...current, name: event.target.value } : current)}
                 onClick={(event) => event.stopPropagation()}
                 onFocus={(event) => event.target.select()}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') submitCreate();
-                  if (event.key === 'Escape') cancelCreate();
-                }}
-                style={{ width: `${Math.max(8, Math.min(42, pendingCreate.name.length + 2))}ch` }}
-                value={pendingCreate.name}
-              />
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') submitCreate();
+                      if (event.key === 'Escape') cancelCreate();
+                    }}
+                    style={{ width: getRenameInputWidth(pendingCreate.name) }}
+                    value={pendingCreate.name}
+                  />
             </button>
             <span>-</span>
             <span>{pendingCreate.type === 'd' ? '文件夹' : '文件'}</span>
@@ -2471,7 +5302,12 @@ function ContainerFileModal({ container, node, notify, onClose }) {
               key={`${item.name}-${item.modified}`}
               onClick={(event) => toggleSelectItem(event, item)}
               onContextMenu={(event) => openContextMenu(event, item)}
-              onDoubleClick={() => renamingName ? undefined : isDir ? navigateToPath(itemPath) : isEditableTextFile(item.name) ? openTextEditor(item) : undefined}
+              onDoubleClick={(event) => {
+                if (renamingName) return;
+                const target = event.target instanceof Element ? event.target : null;
+                if (target?.closest('.file-name')) return;
+                openFileItem(item);
+              }}
               onDragEnd={stopDragging}
               onDragLeave={isDir ? (event) => leaveDropTarget(event, itemPath) : undefined}
               onDragStart={(event) => {
@@ -2489,9 +5325,10 @@ function ContainerFileModal({ container, node, notify, onClose }) {
               <button className="file-name" onClick={(event) => {
                 if (renamingName === item.name) event.stopPropagation();
                 else scheduleRenameFromNameClick(event, item, selected);
-              }} onDoubleClick={() => {
+              }} onDoubleClick={(event) => {
+                event.stopPropagation();
                 cancelScheduledRename();
-                return renamingName ? undefined : isDir ? navigateToPath(itemPath) : isEditableTextFile(item.name) ? openTextEditor(item) : undefined;
+                if (!renamingName) openFileItem(item);
               }} type="button">
                 <FileVisualIcon isDir={isDir} name={item.name} />
                 {renamingName === item.name ? (
@@ -2506,7 +5343,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
                       if (event.key === 'Enter') submitRename(item);
                       if (event.key === 'Escape') cancelRename();
                     }}
-                    style={{ width: `${Math.max(8, Math.min(42, renameValue.length + 2))}ch` }}
+                    style={{ width: getRenameInputWidth(renameValue || item.name) }}
                     value={renameValue}
                   />
                 ) : (
@@ -2581,7 +5418,7 @@ function ContainerFileModal({ container, node, notify, onClose }) {
                 </button>
               )}
               {contextMenu.item.type !== 'd' && (
-                <button disabled={!canWriteFiles} onClick={() => { downloadItem(contextMenu.item); closeContextMenu(); }} type="button">
+                <button disabled={busy} onClick={() => { downloadItem(contextMenu.item); closeContextMenu(); }} type="button">
                   <Download size={16} />下载
                 </button>
               )}
@@ -2617,34 +5454,6 @@ function ContainerFileModal({ container, node, notify, onClose }) {
         <div className={dropHint.invalid ? 'file-drop-tooltip invalid' : 'file-drop-tooltip'} style={{ left: dropHint.x, top: dropHint.y }}>
           <i>{dropHint.invalid ? '!' : '✓'}</i>
           <span>{dropHint.text}</span>
-        </div>
-      )}
-      {uploadProgress && (
-        <div className="file-upload-progress">
-          <div className="file-upload-copy">
-            <strong>正在上传</strong>
-            <span title={uploadProgress.current}>{uploadProgress.current}</span>
-            <small>{uploadProgress.index}/{uploadProgress.total} · {uploadProgress.speed}</small>
-          </div>
-          <div className="file-upload-side">
-            <b>{uploadProgress.percent}%</b>
-            <button onClick={cancelUpload} type="button">取消</button>
-          </div>
-          <i><em style={{ width: `${uploadProgress.percent}%` }}></em></i>
-        </div>
-      )}
-      {downloadProgress && (
-        <div className={uploadProgress ? 'file-upload-progress file-download-progress stacked' : 'file-upload-progress file-download-progress'}>
-          <div className="file-upload-copy">
-            <strong>正在下载</strong>
-            <span title={downloadProgress.current}>{downloadProgress.current}</span>
-            <small>{downloadProgress.speed}</small>
-          </div>
-          <div className="file-upload-side">
-            <b>{downloadProgress.percent}%</b>
-            <button onClick={cancelDownload} type="button">取消</button>
-          </div>
-          <i><em style={{ width: `${downloadProgress.percent}%` }}></em></i>
         </div>
       )}
       {uploadConfirm && (
@@ -3077,6 +5886,7 @@ function getEditorLanguageLabel(fileName = '') {
 
 function ContainerCreateWizard({ node, notify, onClose, onCreated }) {
   useBodyScrollLock();
+  const nodeDisplayName = formatNodeDisplayName(node);
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -3162,7 +5972,7 @@ function ContainerCreateWizard({ node, notify, onClose, onCreated }) {
 
   useEffect(() => {
     let ignore = false;
-    fetchImages(node.id)
+    fetchImages(node)
       .then((items) => {
         if (!ignore) setLocalImages(items || []);
       })
@@ -3287,18 +6097,33 @@ function ContainerCreateWizard({ node, notify, onClose, onCreated }) {
       error: false,
     });
     try {
-      const socket = io(SOCKET_BASE_URL, {
-        transports: ['websocket'],
-        reconnectionAttempts: 2,
-      });
+      const socket = createRealtimeClient(createDaemonRealtimeClientUrl(node));
+      const failCreate = (message) => {
+        setCreateProgress((current) => ({
+          ...(current || {}),
+          status: message,
+          progress: current?.progress || 0,
+          logs: [...(current?.logs || []), message].slice(-8),
+          done: false,
+          error: true,
+        }));
+        setError(message);
+        notify?.({ type: 'error', title: '容器创建失败', message, duration: 5200 });
+        socket.disconnect();
+        createSocketRef.current = null;
+        setSaving(false);
+      };
+      const clearCreateTimeout = () => window.clearTimeout(createTimeout);
+      const createTimeout = window.setTimeout(() => {
+        failCreate('创建任务连接超时，请检查终端桥和 daemon 是否在线');
+      }, 15000);
       createSocketRef.current = socket;
       socket.on('connect', () => {
-        socket.emit('container/create/open', {
-          nodeId: node.id,
-          config: buildCreatePayload(),
-        });
+        clearCreateTimeout();
+        socket.emit('container/create', buildCreatePayload());
       });
       socket.on('container/create/progress', (packet) => {
+        clearCreateTimeout();
         const data = packet?.data || {};
         setCreateProgress((current) => {
           const line = [data.stage, data.layer, data.status].filter(Boolean).join(' · ');
@@ -3316,6 +6141,7 @@ function ContainerCreateWizard({ node, notify, onClose, onCreated }) {
         });
       });
       socket.on('container/create/done', (packet) => {
+        clearCreateTimeout();
         const output = packet?.data?.output || '';
         setCreateProgress((current) => ({
           ...(current || {}),
@@ -3333,34 +6159,25 @@ function ContainerCreateWizard({ node, notify, onClose, onCreated }) {
         setSaving(false);
       });
       socket.on('container/create/error', (packet) => {
+        clearCreateTimeout();
         const message = friendlyError(packet?.message || '容器创建失败');
-        setCreateProgress((current) => ({
-          ...(current || {}),
-          status: message,
-          progress: current?.progress || 0,
-          logs: [...(current?.logs || []), message].slice(-8),
-          done: false,
-          error: true,
-        }));
-        setError(message);
-        notify?.({ type: 'error', title: '容器创建失败', message, duration: 5200 });
-        socket.disconnect();
-        createSocketRef.current = null;
-        setSaving(false);
+        failCreate(message);
       });
       socket.on('connect_error', (socketError) => {
+        clearCreateTimeout();
         const message = friendlyError(socketError.message);
-        setCreateProgress((current) => ({
-          ...(current || {}),
-          status: message,
-          logs: [...(current?.logs || []), message].slice(-8),
-          error: true,
-        }));
-        notify?.({ type: 'error', title: '创建进度连接失败', message, duration: 5200 });
-        setSaving(false);
+        failCreate(message);
       });
     } catch (createError) {
       const message = friendlyError(createError.message);
+      setCreateProgress((current) => ({
+        ...(current || {}),
+        status: message,
+        progress: current?.progress || 0,
+        logs: [...(current?.logs || []), message].slice(-8),
+        done: false,
+        error: true,
+      }));
       setError(message);
       notify?.({ type: 'error', title: '容器创建失败', message, duration: 5200 });
       setSaving(false);
@@ -3379,7 +6196,7 @@ function ContainerCreateWizard({ node, notify, onClose, onCreated }) {
         <div className="wizard-head">
           <div>
             <h2>创建 Docker 容器</h2>
-            <span>{node.name}</span>
+            <span>{nodeDisplayName}</span>
           </div>
           <div className="wizard-head-actions">
             <button className={importOpen ? 'import-command-head-button active' : 'import-command-head-button'} onClick={() => setImportOpen((value) => !value)} type="button">
@@ -3653,7 +6470,7 @@ function ContainerCreateWizard({ node, notify, onClose, onCreated }) {
                     <span>确认后将拉取镜像并启动容器。</span>
                   </div>
                   <div className="review-summary-list">
-                    <ReviewRow label="节点" value={node.name} />
+                    <ReviewRow label="节点" value={nodeDisplayName} />
                     <ReviewRow label="网络模式" value={form.networkMode} />
                     <ReviewRow label="重启策略" value={formatRestartPolicy(form.restartPolicy)} />
                     <ReviewRow label="工作目录" value={form.workingDir || '默认'} />
@@ -3683,19 +6500,19 @@ function ContainerCreateWizard({ node, notify, onClose, onCreated }) {
   );
 }
 
-function ConsoleMetricCard({ icon: Icon, label, value, tone, compact = false }) {
+function ConsoleMetricCard({ icon: Icon, label, value, tone, compact = false, loading = false }) {
   const length = String(value).length;
   const valueClass = length > 26 ? 'tiny' : length > 21 ? 'mini' : length > 18 ? 'long' : length > 12 ? 'medium' : '';
   const displayValue = Array.isArray(value)
     ? value.map((item) => <span className="metric-value-line" key={item}>{item}</span>)
     : value;
-  const arrayClass = Array.isArray(value) ? 'multi-value' : '';
+  const arrayClass = Array.isArray(value) && !loading ? 'multi-value' : '';
   return (
-    <article className={['console-metric-card', tone, valueClass ? `value-${valueClass}` : '', arrayClass, compact ? 'compact' : ''].filter(Boolean).join(' ')}>
+    <article className={['console-metric-card', tone, valueClass ? `value-${valueClass}` : '', arrayClass, compact ? 'compact' : '', loading ? 'loading' : ''].filter(Boolean).join(' ')}>
       <span><Icon size={18} /></span>
       <div>
         <em>{label}</em>
-        <strong className={Array.isArray(value) ? 'inline-values' : valueClass}>{displayValue}</strong>
+        <strong className={Array.isArray(value) && !loading ? 'inline-values' : valueClass}>{loading ? '读取中' : displayValue}</strong>
       </div>
     </article>
   );
@@ -3815,7 +6632,7 @@ function ContainerEditModal({ container, node, notify, onClose, onSaved, onDelet
 
   useEffect(() => {
     let ignore = false;
-    fetchImages(node.id)
+    fetchImages(node)
       .then((items) => {
         if (!ignore) setLocalImages(items || []);
       })
@@ -3938,21 +6755,21 @@ function ContainerEditModal({ container, node, notify, onClose, onSaved, onDelet
     setSaving(true);
     setError('');
     try {
-      await updateContainer(node.id, container.id, {
+      await updateContainer(node, container.id, {
         ...form,
         ports: editRowsToPortSpecs(form.ports),
         env: editRowsToEnvSpecs(form.env),
         mounts: editRowsToMountSpecs(form.mounts),
       });
       const latestState = await waitForContainerState(
-        node.id,
+        node,
         { id: container.id, name: form.name, fallbackName: container.name },
-        (item) => Boolean(item && CONTAINER_FINAL_STATES.has(item.state || '')),
+        (item) => Boolean(item && containerFinalStates.has(item.state || '')),
         { timeout: 24000, timeoutMessage: '配置已提交，但容器状态确认超时' },
       );
       let latest = latestState;
       try {
-        latest = await fetchContainer(node.id, latestState?.id || container.id, { fast: true });
+        latest = await fetchContainer(node, latestState?.id || container.id, { fast: true });
       } catch {
         // The state-confirmed snapshot is still newer than the modal's original props.
       }
@@ -3972,9 +6789,9 @@ function ContainerEditModal({ container, node, notify, onClose, onSaved, onDelet
     setDeleting(true);
     setError('');
     try {
-      await deleteContainer(node.id, container.id);
+      await deleteContainer(node, container.id);
       await waitForContainerState(
-        node.id,
+        node,
         { id: container.id, name: container.name },
         (_item, items) => !items.some((item) => sameContainerIdentity(item, { id: container.id, name: container.name })),
         { timeout: 16000, timeoutMessage: '删除已提交，但容器仍在列表中' },
@@ -4391,6 +7208,15 @@ function ToggleSwitch({ checked }) {
 }
 
 function ContainerTerminal({ container, node, title }) {
+  const containerRunning = container.status === '运行中' || container.state === 'running';
+  const statsReady = !containerRunning || hasContainerStats(container.stats);
+  const terminalSessionKey = [
+    node.id,
+    container.id,
+    container.state || '',
+    container.raw?.startedAt || container.startedAt || '',
+    container.raw?.finishedAt || container.finishedAt || '',
+  ].join(':');
   const terminalRef = useRef(null);
   const terminalWrapperRef = useRef(null);
   const terminalInputRef = useRef(null);
@@ -4403,6 +7229,7 @@ function ContainerTerminal({ container, node, title }) {
   const [connected, setConnected] = useState(false);
   const [terminalMode, setTerminalMode] = useState('log-stream');
   const [terminalInput, setTerminalInput] = useState('');
+  const connecting = status === '连接中';
   const focusTerminalInput = () => {
     try {
       terminalInputRef.current?.focus({ preventScroll: true });
@@ -4412,13 +7239,24 @@ function ContainerTerminal({ container, node, title }) {
   };
 
   useEffect(() => {
+    if (!containerRunning) {
+      socketRef.current?.disconnect();
+      terminalInstanceRef.current?.dispose();
+      socketRef.current = null;
+      terminalInstanceRef.current = null;
+      fitAddonRef.current = null;
+      setConnected(false);
+      setTerminalMode('log-stream');
+      setTerminalInput('');
+      setStatus('已断开');
+      return undefined;
+    }
     let disposed = false;
     let fitTimer = null;
     let resize = () => {};
     let stopTerminalWheelLock = () => {};
     const start = async () => {
-      const [{ io }, { Terminal: XTerm }, { FitAddon }] = await Promise.all([
-        import('socket.io-client'),
+      const [{ Terminal: XTerm }, { FitAddon }] = await Promise.all([
         import('@xterm/xterm'),
         import('@xterm/addon-fit'),
       ]);
@@ -4451,10 +7289,7 @@ function ContainerTerminal({ container, node, title }) {
       stopTerminalWheelLock = () => wheelTarget?.removeEventListener('wheel', lockTerminalWheel, { capture: true });
       terminal.writeln('\x1b[90mConnecting to container stream...\x1b[0m');
 
-      const socket = io(SOCKET_BASE_URL, {
-        transports: ['websocket'],
-        reconnectionAttempts: 5,
-      });
+      const socket = createRealtimeClient(createDaemonRealtimeClientUrl(node));
 
       terminalInstanceRef.current = terminal;
       fitAddonRef.current = fitAddon;
@@ -4467,13 +7302,26 @@ function ContainerTerminal({ container, node, title }) {
         terminal.scrollToBottom();
       };
 
+      const writeHistory = async () => {
+        try {
+          const result = await fetchContainerLogs(node, container.id, 400, { sinceStart: container.status === '运行中' || container.state === 'running' });
+          if (disposed) return;
+          const output = typeof result === 'string' ? result : result?.text || result?.output || '';
+          if (output) {
+            writeTerminal(output, { clear: true });
+          } else {
+            terminal.clear();
+          }
+        } catch {
+          // History is a convenience layer; live attach/log status below is authoritative.
+        }
+      };
+
       const openStream = () => {
         setStatus('连接中');
-        socket.emit('container/terminal/open', {
-          nodeId: node.id,
-          containerId: container.id,
-          tail: 220,
-        });
+        setConnected(false);
+        writeHistory();
+        socket.emit('container/attach', { containerId: container.id });
       };
 
       resize = () => {
@@ -4494,38 +7342,39 @@ function ContainerTerminal({ container, node, title }) {
         setConnected(false);
         setStatus('已断开');
       });
-      socket.on('container/terminal/ready', (packet) => {
-        const mode = packet?.data?.mode || 'log-stream';
+      socket.on('container/attach', (packet) => {
+        if (packet?.ok === false) {
+          setConnected(false);
+          setTerminalMode('log-stream');
+          setTerminalInput('');
+          setStatus(packet?.data?.status === 'exited' ? '等待启动' : '日志模式');
+          const message = friendlyError(packet?.message || '');
+          if (message && !/not running|is not running|container is not running/i.test(message)) {
+            terminal.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
+          }
+          return;
+        }
+        const meta = packet?.data || {};
+        const mode = meta.interactive ? 'attach' : 'log-stream';
         setConnected(true);
         setTerminalMode(mode);
         setTerminalInput('');
         setStatus(mode === 'attach' ? '进程终端' : '日志模式');
-        terminal.clear();
-        writeTerminal(packet?.data?.replay || '');
       });
       socket.on('container/stdout', (packet) => {
         writeTerminal(packet?.data?.text || '');
       });
-      socket.on('container/terminal/replay', (packet) => {
-        const data = packet?.data || {};
-        const text = data.replace ? data.text || '' : data.delta || '';
-        writeTerminal(text, { clear: Boolean(data.replace) });
-      });
-      socket.on('container/terminal/error', (packet) => {
+      socket.on('container/attach/error', (packet) => {
         setConnected(false);
         setStatus('连接失败');
         terminal.writeln(`\r\n\x1b[31m${friendlyError(packet?.message || 'Terminal stream error')}\x1b[0m`);
       });
-      socket.on('container/terminal/closed', () => {
-        setConnected(true);
+      socket.on('container/closed', () => {
+        setConnected(false);
+        setTerminalMode('log-stream');
+        setTerminalInput('');
         setStatus('等待启动');
       });
-      socket.on('container/terminal/status', (packet) => {
-        const nextStatus = packet?.data?.status || packet?.message || '连接中';
-        setConnected(packet?.data?.connected !== false);
-        setStatus(nextStatus);
-      });
-      socket.on('container/terminal/clear', () => terminal.clear());
 
       window.addEventListener('resize', resize);
       fitTimer = setInterval(resize, 1800);
@@ -4545,7 +7394,7 @@ function ContainerTerminal({ container, node, title }) {
       terminalInstanceRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [container.id, node.id]);
+  }, [containerRunning, terminalSessionKey]);
 
   const clearTerminal = () => {
     terminalInstanceRef.current?.write('\x1b[2J\x1b[3J\x1b[H');
@@ -4562,9 +7411,7 @@ function ContainerTerminal({ container, node, title }) {
     }
     historyIndexRef.current = commandHistoryRef.current.length;
     socketRef.current?.emit('container/input', {
-      nodeId: node.id,
-      containerId: container.id,
-      command: nextCommand,
+      input: `${nextCommand}\n`,
     });
     setTerminalInput('');
   };
@@ -4602,14 +7449,14 @@ function ContainerTerminal({ container, node, title }) {
           <span className={connected ? 'terminal-state online' : 'terminal-state'}>{status}</span>
         </div>
         <div className="terminal-metrics">
-          <ConsoleMetricCard icon={Cpu} label="CPU 负载" value={`${Number(container.stats.cpuPercent || 0).toFixed(2)}%`} tone="blue" compact />
-          <ConsoleMetricCard icon={Database} label="内存" value={`${formatBytes(container.stats.memoryUsedBytes || 0)} / ${formatBytes(container.stats.memoryLimitBytes || 0)}`} tone="purple" compact />
-          <ConsoleMetricCard icon={HardDrive} label="Swap" value={formatBytes(container.stats.swapUsedBytes || 0)} tone="blue" compact />
-          <ConsoleMetricCard icon={Network} label="网络" value={[`↓ ${formatRate(container.stats.networkDownloadBps || 0)}`, `↑ ${formatRate(container.stats.networkUploadBps || 0)}`]} tone="green" compact />
+          <ConsoleMetricCard icon={Cpu} label="CPU 使用率" value={`${Number(container.stats.cpuUsagePercent ?? container.stats.cpuPercent ?? 0).toFixed(2)}%`} tone="blue" compact loading={!statsReady} />
+          <ConsoleMetricCard icon={Database} label="内存" value={`${formatBytes(container.stats.memoryUsedBytes || 0)} / ${formatBytes(container.stats.memoryLimitBytes || 0)}`} tone="purple" compact loading={!statsReady} />
+          <ConsoleMetricCard icon={HardDrive} label="Swap" value={formatBytes(container.stats.swapUsedBytes || 0)} tone="blue" compact loading={!statsReady} />
+          <ConsoleMetricCard icon={Network} label="网络" value={[`↓ ${formatRate(container.stats.networkDownloadBps || 0)}`, `↑ ${formatRate(container.stats.networkUploadBps || 0)}`]} tone="green" compact loading={!statsReady} />
         </div>
       </div>
       <div className="console-wrapper">
-        {!connected && <div className="terminal-loading">连接中</div>}
+        {connecting && <div className="terminal-loading">连接中</div>}
         <div className="terminal-button-group">
           <button onClick={clearTerminal} title="清屏" type="button">清屏</button>
         </div>
@@ -4660,7 +7507,9 @@ function NetworkView() {
   );
 }
 
-function IdentityView() {
+function IdentityView({ currentUser }) {
+  if (!containerRunning) return null;
+
   return (
     <section className="page">
       <PageHead title="用户与账号绑定" desc="用户管理、QQ 绑定、邮箱验证、Daemon Token 和资源授权都在这里。" action="邀请用户" />
@@ -4669,7 +7518,7 @@ function IdentityView() {
           <UserTable />
         </Panel>
         <Panel title="当前账号绑定" action="绑定 QQ" icon={CircleUserRound}>
-          <AccountBindings />
+          <AccountBindings currentUser={currentUser} />
         </Panel>
       </div>
     </section>
@@ -4692,7 +7541,7 @@ function SecurityView() {
   );
 }
 
-function RemoteNodesView({ nodes, notify, onNodesChange }) {
+function RemoteNodesView({ nodes, notify, onNodesChange, embedded = false }) {
   const [checks, setChecks] = useState({});
   const [metrics, setMetrics] = useState({});
   const [networkHistory, setNetworkHistory] = useState({});
@@ -4718,12 +7567,12 @@ function RemoteNodesView({ nodes, notify, onNodesChange }) {
       return next;
     });
     nodes.forEach((node) => {
-      pingNode(node.id)
+      pingNode(node)
         .then((result) => {
           if (ignore) return;
           setChecks((current) => ({
             ...current,
-            [node.id]: { status: 'ok', message: result.output || '连接正常' },
+            [node.id]: { status: 'ok', message: result.service || '连接正常' },
           }));
         })
         .catch((error) => {
@@ -4742,7 +7591,7 @@ function RemoteNodesView({ nodes, notify, onNodesChange }) {
   useEffect(() => {
     let ignore = false;
     const loadMetrics = async () => {
-      const results = await Promise.allSettled(nodes.map(async (node) => [node.id, await fetchNodeMetrics(node.id)]));
+      const results = await Promise.allSettled(nodes.map(async (node) => [node.id, await fetchNodeMetrics(node)]));
       if (ignore) return;
       setMetrics((current) => {
         const next = { ...current };
@@ -4787,10 +7636,10 @@ function RemoteNodesView({ nodes, notify, onNodesChange }) {
       [node.id]: { status: 'checking', message: '检测中' },
     }));
     try {
-      const result = await pingNode(node.id);
+      const result = await pingNode(node);
       setChecks((current) => ({
         ...current,
-        [node.id]: { status: 'ok', message: result.output || '连接正常' },
+        [node.id]: { status: 'ok', message: result.service || '连接正常' },
       }));
       notify({ title: '节点连接正常', message: node.name });
     } catch (error) {
@@ -4853,7 +7702,7 @@ function RemoteNodesView({ nodes, notify, onNodesChange }) {
   };
 
   return (
-    <section className="page">
+    <section className={embedded ? 'resource-center' : 'page'}>
       <PageHead title="远程节点" desc="通过北冥 daemon 管理共享配置服务器，容器与虚拟机统一从 daemon 节点读取。" action="新增节点" onAction={() => setEditingNode({ mode: 'create' })} />
       <Panel title="节点列表" action={refreshing ? '刷新中...' : '刷新'} icon={ServerCog} onAction={reloadNodes}>
         <div className="node-table">
@@ -4884,7 +7733,7 @@ function RemoteNodesView({ nodes, notify, onNodesChange }) {
                       <strong>{node.name}</strong>
                       <NodeHealth metric={metric} check={check} />
                     </div>
-                    <span>{node.id}</span>
+                    <span>ID: {node.id}</span>
                   </div>
                 </div>
                 <NodeMetric metric={metric} field="cpu" />
@@ -4975,8 +7824,9 @@ function NodeMetric({ metric, field }) {
   const value = field === 'cpu' ? metric.data.cpu : metric.data[field]?.percent;
   const label = value === null || value === undefined ? '-' : `${Number(value).toFixed(2)}%`;
   const subLabel = getMetricSubLabel(metric.data, field);
+  const tone = metricHealthTone(value);
   return (
-    <div className="metric-mini">
+    <div className={`metric-mini ${tone}`}>
       <b>{label}</b>
       {subLabel && <small>{subLabel}</small>}
       <i><span style={{ width: value ? `${Math.min(value, 100)}%` : '0%' }}></span></i>
@@ -5178,9 +8028,9 @@ function Panel({ title, action, icon: Icon, children, onAction }) {
   );
 }
 
-function ResourceTable({ resources }) {
+function ResourceTable({ resources, batchMode = false, selectedIds = new Set(), onToggleSelect }) {
   return (
-    <div className="resource-table">
+    <div className={batchMode ? 'resource-table batch-mode' : 'resource-table'}>
       <div className="resource-row table-head">
         <span>资源</span>
         <span>地域</span>
@@ -5189,25 +8039,40 @@ function ResourceTable({ resources }) {
         <span>状态</span>
         <span>入口</span>
       </div>
-      {resources.map((item) => (
-        <div className="resource-row" key={item.id}>
-          <div className="resource-name">
-            <KindIcon kind={item.kind} />
-            <div>
-              <strong>{item.name}</strong>
-              <span>{item.kind} · {item.owner}</span>
+      {resources.map((item) => {
+        const selected = selectedIds.has(resourceKey(item));
+        return (
+          <div
+            className={selected ? 'resource-row batch-selected' : 'resource-row'}
+            key={item.id}
+            onClick={batchMode ? () => onToggleSelect?.(item) : undefined}
+            onKeyDown={batchMode ? (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onToggleSelect?.(item);
+              }
+            } : undefined}
+            role={batchMode ? 'button' : undefined}
+            tabIndex={batchMode ? 0 : undefined}
+          >
+            <div className="resource-name">
+              <KindIcon kind={item.kind} />
+              <div>
+                <strong>{item.name}</strong>
+                <span>{item.kind} · {item.owner}</span>
+              </div>
             </div>
+            <span>{item.region}</span>
+            <span>{item.plan}</span>
+            <div className="load-cell">
+              <i style={{ width: `${item.load}%` }}></i>
+              <b>{item.load}%</b>
+            </div>
+            <Status status={item.status} />
+            <code>{item.endpoint}</code>
           </div>
-          <span>{item.region}</span>
-          <span>{item.plan}</span>
-          <div className="load-cell">
-            <i style={{ width: `${item.load}%` }}></i>
-            <b>{item.load}%</b>
-          </div>
-          <Status status={item.status} />
-          <code>{item.endpoint}</code>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -5239,10 +8104,15 @@ function ActivityFeed() {
   );
 }
 
-function AccountBindings() {
+function AccountBindings({ currentUser }) {
+  const visibleAccounts = [
+    { ...accounts[0], value: currentUser?.email || '-' },
+    { ...accounts[1] },
+    { ...accounts[2] },
+  ];
   return (
     <div className="binding-list">
-      {accounts.map((account) => {
+      {visibleAccounts.map((account) => {
         const Icon = account.icon;
         return (
           <div className="binding" key={account.provider}>
@@ -5283,20 +8153,46 @@ function Quota({ label, value }) {
 }
 
 function UserTable() {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let ignore = false;
+    setLoading(true);
+    fetchUsers()
+      .then((items) => {
+        if (ignore) return;
+        setUsers(Array.isArray(items) ? items : []);
+        setError('');
+      })
+      .catch((loadError) => {
+        if (ignore) return;
+        setError(friendlyError(loadError.message));
+      })
+      .finally(() => {
+        if (!ignore) setLoading(false);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, []);
+  if (loading) return <StateMessage title="正在读取用户" desc="正在同步账号列表。" />;
+  if (error) return <StateMessage title="用户列表不可用" desc={error} tone="error" />;
   return (
     <div className="user-list">
-      {demoUsers.map((user) => (
+      {users.map((user) => (
         <div className="user-row" key={user.email}>
-          <div className="mini-avatar">{user.name.slice(0, 1)}</div>
+          <div className="mini-avatar">{(user.name || user.email).slice(0, 1)}</div>
           <div>
             <strong>{user.name}</strong>
             <span>{user.email}</span>
           </div>
-          <span>{user.role}</span>
-          <span>{user.binding}</span>
-          <Status status={user.status === '正常' ? '运行中' : user.status === '待补全' ? '部署中' : '维护中'} />
+          <span>{roleLabel(user.role)}</span>
+          <span>邮箱</span>
+          <Status status={user.status === 'ACTIVE' ? '运行中' : '维护中'} />
         </div>
       ))}
+      {users.length === 0 && <StateMessage title="暂无用户" desc="注册后会出现在这里。" />}
     </div>
   );
 }
@@ -5311,15 +8207,6 @@ function SecurityRules() {
           <span>{rule}</span>
         </div>
       ))}
-    </div>
-  );
-}
-
-function Signal({ label, value }) {
-  return (
-    <div className="signal">
-      <span>{label}</span>
-      <strong>{value}</strong>
     </div>
   );
 }

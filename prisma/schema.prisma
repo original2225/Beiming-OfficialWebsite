@@ -1,0 +1,160 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String        @id @default(cuid())
+  name         String
+  email        String        @unique
+  passwordHash String?
+  status       UserStatus    @default(ACTIVE)
+  role         Role          @relation(fields: [roleId], references: [id])
+  roleId       String
+  bindings     AccountBinding[]
+  resources    ResourceGrant[]
+  auditLogs    AuditLog[]    @relation("AuditActor")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Role {
+  id          String       @id @default(cuid())
+  name        String       @unique
+  description String?
+  users       User[]
+  permissions RolePermission[]
+  createdAt   DateTime     @default(now())
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  code        String           @unique
+  name        String
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  roleId       String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  permissionId String
+
+  @@id([roleId, permissionId])
+}
+
+model AccountBinding {
+  id         String          @id @default(cuid())
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  provider   BindingProvider
+  identifier String
+  verifiedAt DateTime?
+  createdAt  DateTime        @default(now())
+
+  @@unique([provider, identifier])
+}
+
+model CloudResource {
+  id         String          @id @default(cuid())
+  name       String
+  type       ResourceType
+  status     ResourceStatus  @default(RUNNING)
+  region     String
+  endpoint   String?
+  cpuCores   Int?
+  memoryMb   Int?
+  diskGb     Int?
+  metadata   Json?
+  grants     ResourceGrant[]
+  auditLogs  AuditLog[]
+  node       RemoteNode?     @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  nodeId     String?
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+}
+
+model RemoteNode {
+  id          String          @id @default(cuid())
+  slug        String          @unique
+  name        String
+  host        String
+  port        Int             @default(22)
+  username    String
+  authType    NodeAuthType    @default(SSH_KEY)
+  status      RemoteNodeStatus @default(UNKNOWN)
+  resources   CloudResource[]
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+}
+
+model ResourceGrant {
+  id         String        @id @default(cuid())
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  resource   CloudResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  resourceId String
+  access     ResourceAccess @default(VIEWER)
+  createdAt  DateTime      @default(now())
+
+  @@unique([userId, resourceId])
+}
+
+model AuditLog {
+  id         String         @id @default(cuid())
+  actor      User?          @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorId    String?
+  resource   CloudResource? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  resourceId String?
+  action     String
+  detail     Json?
+  ipAddress  String?
+  createdAt  DateTime       @default(now())
+}
+
+enum UserStatus {
+  ACTIVE
+  PENDING
+  SUSPENDED
+}
+
+enum BindingProvider {
+  EMAIL
+  QQ
+  SSH_KEY
+}
+
+enum ResourceType {
+  MINECRAFT
+  VIRTUAL_MACHINE
+  CONTAINER
+  LXC_CONTAINER
+}
+
+enum ResourceStatus {
+  RUNNING
+  DEPLOYING
+  MAINTENANCE
+  STOPPED
+}
+
+enum ResourceAccess {
+  OWNER
+  OPERATOR
+  VIEWER
+}
+
+enum NodeAuthType {
+  SSH_KEY
+  PASSWORD
+}
+
+enum RemoteNodeStatus {
+  ONLINE
+  OFFLINE
+  UNKNOWN
+}

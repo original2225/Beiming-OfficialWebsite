@@ -14,7 +14,7 @@ import (
 
 const (
 	statusPanelWidth     = 360
-	statusPanelHeight    = 430
+	statusPanelHeight    = 486
 	wmDestroy            = 0x0002
 	wmActivate           = 0x0006
 	wmKillFocus          = 0x0008
@@ -41,6 +41,8 @@ const (
 	ofnNoChangeDir       = 0x00000008
 	ofnOverwritePrompt   = 0x00000002
 	ofnPathMustExist     = 0x00000800
+	ofnFileMustExist     = 0x00001000
+	ofnAllowMultiSelect  = 0x00000200
 	ofnExplorer          = 0x00080000
 	ofnEnableSizing      = 0x00800000
 	idiApplication       = 32512
@@ -54,6 +56,7 @@ const (
 	vkRButton            = 0x02
 	dtLeft               = 0x00000000
 	dtCenter             = 0x00000001
+	dtRight              = 0x00000002
 	dtVCenter            = 0x00000004
 	dtSingleLine         = 0x00000020
 	dtEndEllipsis        = 0x00008000
@@ -99,6 +102,10 @@ var (
 	procSetCursor        = user32.NewProc("SetCursor")
 	procSetProcessDPI    = user32.NewProc("SetProcessDPIAware")
 	procGetCursorPos     = user32.NewProc("GetCursorPos")
+	procGetForeground    = user32.NewProc("GetForegroundWindow")
+	procGetWindowThread  = user32.NewProc("GetWindowThreadProcessId")
+	procAttachThread     = user32.NewProc("AttachThreadInput")
+	procGetWindowText    = user32.NewProc("GetWindowTextW")
 	procSetForeground    = user32.NewProc("SetForegroundWindow")
 	procSetFocus         = user32.NewProc("SetFocus")
 	procShowWindow       = user32.NewProc("ShowWindow")
@@ -139,7 +146,9 @@ var (
 	procCreateFont       = gdi32.NewProc("CreateFontW")
 	procCreateRoundRgn   = gdi32.NewProc("CreateRoundRectRgn")
 	procGetSaveFileName  = comdlg32.NewProc("GetSaveFileNameW")
+	procGetOpenFileName  = comdlg32.NewProc("GetOpenFileNameW")
 	procCommDlgError     = comdlg32.NewProc("CommDlgExtendedError")
+	procGetCurrentThread = kernel32.NewProc("GetCurrentThreadId")
 	trayHwnd             uintptr
 	statusPanelHwnd      uintptr
 	statusPanelBounds    rect
@@ -370,7 +379,11 @@ func trayWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 	case wmLButtonUp:
 		if hwnd == statusPanelHwnd {
 			x, y := pointFromLParam(lParam)
-			if pointInRect(x, y, downloadsButtonRect()) {
+			if pointInRect(x, y, pauseButtonRect()) {
+				toggleActiveTrayTaskPause()
+			} else if pointInRect(x, y, cancelButtonRect()) {
+				cancelActiveTrayTask()
+			} else if pointInRect(x, y, downloadsButtonRect()) {
 				openCurrentDownloadLocation()
 				closeStatusPanel()
 			} else if pointInRect(x, y, exitButtonRect()) {
@@ -499,39 +512,30 @@ func drawStatusPanel(hdc uintptr) {
 	drawSeparator(hdc, 74)
 	drawSpeedRow(hdc, 86, summary.Speed, summary.UploadSpeed)
 	drawPlainRow(hdc, 136, "线程状态", summary.Threads)
-	drawProgressRow(hdc, 190, summary.Percent, summary.PercentValue)
+	drawProgressRow(hdc, 190, summary.Percent, summary.SizeProgress, summary.PercentValue)
 	drawPlainRow(hdc, 244, "当前任务", summary.Task)
 	drawSeparator(hdc, 302)
-	drawMenuAction(hdc, downloadsButtonRect(), "打开下载位置", "›", statusPanelHover == 1)
+	drawTransferControls(hdc, summary)
 	drawSeparator(hdc, 358)
-	drawMenuAction(hdc, exitButtonRect(), "退出下载进程", "", statusPanelHover == 2)
+	drawMenuAction(hdc, downloadsButtonRect(), "打开下载位置", "›", statusPanelHover == 3)
+	drawSeparator(hdc, 414)
+	drawMenuAction(hdc, exitButtonRect(), "退出下载进程", "", statusPanelHover == 4)
 }
 
 func drawMenuStatus(hdc uintptr, state string) {
-	fill := rgb(240, 253, 244)
-	stroke := rgb(187, 247, 208)
-	text := rgb(22, 101, 52)
-	if state == "下载中" {
-		fill = rgb(239, 246, 255)
-		stroke = rgb(191, 219, 254)
-		text = rgb(29, 78, 216)
-	} else if state == "已暂停" || state == "排队中" {
-		fill = rgb(255, 251, 235)
-		stroke = rgb(253, 230, 138)
-		text = rgb(146, 64, 14)
-	} else if state == "下载失败" {
-		fill = rgb(254, 242, 242)
-		stroke = rgb(254, 202, 202)
-		text = rgb(185, 28, 28)
+	dot := rgb(34, 197, 94)
+	if state != "已连接" {
+		dot = rgb(148, 163, 184)
 	}
-	drawRoundRect(hdc, rect{250, 18, 332, 52}, fill, stroke, 17)
-	drawText(hdc, state, rect{254, 18, 328, 52}, 14, fwMedium, text, dtCenter|dtVCenter|dtSingleLine|dtEndEllipsis)
+	drawRoundRect(hdc, rect{250, 19, 334, 51}, rgb(248, 250, 252), rgb(226, 232, 240), 16)
+	drawTextWithFont(hdc, "●", rect{259, 19, 274, 51}, 9, fwNormal, dot, dtCenter|dtVCenter|dtSingleLine, "Segoe UI Symbol")
+	drawText(hdc, state, rect{278, 19, 326, 51}, 13, fwMedium, rgb(51, 65, 85), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
 }
 
 func drawSpeedRow(hdc uintptr, top int32, downloadSpeed, uploadSpeed string) {
-	drawText(hdc, "↓", rect{28, top + 2, 52, top + 38}, 18, fwNormal, rgb(37, 99, 235), dtCenter|dtVCenter|dtSingleLine)
+	drawTextWithFont(hdc, "\uE896", rect{28, top + 2, 52, top + 38}, 17, fwNormal, rgb(59, 130, 246), dtCenter|dtVCenter|dtSingleLine, "Segoe MDL2 Assets")
 	drawText(hdc, downloadSpeed, rect{68, top + 2, 164, top + 38}, 18, fwNormal, rgb(15, 23, 42), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
-	drawText(hdc, "↑", rect{184, top + 2, 208, top + 38}, 18, fwNormal, rgb(20, 184, 166), dtCenter|dtVCenter|dtSingleLine)
+	drawTextWithFont(hdc, "\uE898", rect{184, top + 2, 208, top + 38}, 17, fwNormal, rgb(13, 148, 136), dtCenter|dtVCenter|dtSingleLine, "Segoe MDL2 Assets")
 	drawText(hdc, uploadSpeed, rect{224, top + 2, 334, top + 38}, 18, fwNormal, rgb(15, 23, 42), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
 }
 
@@ -540,16 +544,17 @@ func drawPlainRow(hdc uintptr, top int32, label, value string) {
 	drawText(hdc, value, rect{154, top + 2, 334, top + 38}, 18, fwMedium, rgb(2, 6, 23), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
 }
 
-func drawProgressRow(hdc uintptr, top int32, percent string, value int) {
+func drawProgressRow(hdc uintptr, top int32, percent, sizeProgress string, value int) {
 	drawText(hdc, "完成进度", rect{34, top + 3, 146, top + 37}, 17, fwNormal, rgb(51, 65, 85), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
-	drawText(hdc, percent, rect{154, top + 2, 334, top + 26}, 18, fwMedium, rgb(2, 6, 23), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
-	drawRoundRect(hdc, rect{154, top + 33, 334, top + 40}, rgb(226, 232, 240), rgb(226, 232, 240), 4)
+	drawText(hdc, percent, rect{154, top + 2, 210, top + 24}, 18, fwMedium, rgb(2, 6, 23), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
+	drawText(hdc, sizeProgress, rect{154, top + 23, 334, top + 42}, 13, fwNormal, rgb(100, 116, 139), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
+	drawRoundRect(hdc, rect{154, top + 46, 334, top + 53}, rgb(226, 232, 240), rgb(226, 232, 240), 4)
 	if value > 0 {
 		if value > 100 {
 			value = 100
 		}
 		width := int32(180 * value / 100)
-		drawRoundRect(hdc, rect{154, top + 33, 154 + width, top + 40}, rgb(34, 197, 94), rgb(34, 197, 94), 4)
+		drawRoundRect(hdc, rect{154, top + 46, 154 + width, top + 53}, rgb(34, 197, 94), rgb(34, 197, 94), 4)
 	}
 }
 
@@ -561,6 +566,60 @@ func drawMenuAction(hdc uintptr, r rect, label, suffix string, hovered bool) {
 	if suffix != "" {
 		drawText(hdc, suffix, rect{300, r.Top, 330, r.Bottom}, 22, fwNormal, rgb(100, 116, 139), dtCenter|dtVCenter|dtSingleLine)
 	}
+}
+
+func drawTransferControls(hdc uintptr, summary traySummary) {
+	canCancel := summary.ID != "" && (summary.RawState == "downloading" || summary.RawState == "uploading" || summary.RawState == "queued" || summary.RawState == "paused")
+	canPauseDownload := summary.Kind == "download" && (summary.RawState == "downloading" || summary.RawState == "paused")
+	pauseMode := "pause"
+	if canPauseDownload {
+		if summary.RawState == "paused" {
+			pauseMode = "play"
+		}
+	}
+	drawText(hdc, "任务控制", rect{34, 310, 120, 352}, 17, fwNormal, rgb(51, 65, 85), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
+	drawText(hdc, summary.TaskState, rect{124, 310, 220, 352}, 15, fwNormal, rgb(100, 116, 139), dtCenter|dtVCenter|dtSingleLine|dtEndEllipsis)
+	drawIconControlButton(hdc, pauseButtonRect(), pauseMode, statusPanelHover == 1, canPauseDownload, false)
+	drawIconControlButton(hdc, cancelButtonRect(), "cancel", statusPanelHover == 2, canCancel, true)
+}
+
+func drawIconControlButton(hdc uintptr, r rect, icon string, hovered, enabled, danger bool) {
+	fill := rgb(255, 255, 255)
+	stroke := rgb(255, 255, 255)
+	text := rgb(71, 85, 105)
+	radius := int32(999)
+	if enabled {
+		text = rgb(51, 65, 85)
+		if danger {
+			text = rgb(185, 28, 28)
+		}
+	}
+	if hovered && enabled {
+		fill = rgb(241, 245, 249)
+		stroke = rgb(241, 245, 249)
+		if danger {
+			fill = rgb(254, 242, 242)
+			stroke = rgb(254, 242, 242)
+		}
+	}
+	if !enabled {
+		fill = rgb(255, 255, 255)
+		stroke = rgb(255, 255, 255)
+		text = rgb(203, 213, 225)
+	}
+	drawRoundRect(hdc, r, fill, stroke, radius)
+	drawTrayControlIcon(hdc, r, icon, text)
+}
+
+func drawTrayControlIcon(hdc uintptr, r rect, icon string, color uintptr) {
+	glyph := "\uE769"
+	switch icon {
+	case "play":
+		glyph = "\uE768"
+	case "cancel":
+		glyph = "\uE711"
+	}
+	drawTextWithFont(hdc, glyph, r, 17, fwNormal, color, dtCenter|dtVCenter|dtSingleLine, "Segoe MDL2 Assets")
 }
 
 func drawSeparator(hdc uintptr, y int32) {
@@ -580,7 +639,11 @@ func drawRoundRect(hdc uintptr, r rect, fill, stroke uintptr, radius int32) {
 }
 
 func drawText(hdc uintptr, text string, r rect, size int32, weight int32, color uintptr, format uint32) {
-	fontName, _ := syscall.UTF16PtrFromString("Microsoft YaHei UI")
+	drawTextWithFont(hdc, text, r, size, weight, color, format, "Microsoft YaHei UI")
+}
+
+func drawTextWithFont(hdc uintptr, text string, r rect, size int32, weight int32, color uintptr, format uint32, family string) {
+	fontName, _ := syscall.UTF16PtrFromString(family)
 	font, _, _ := procCreateFont.Call(
 		uintptr(-size),
 		0,
@@ -610,7 +673,7 @@ func rgb(red, green, blue byte) uintptr {
 }
 
 func exitButtonRect() rect {
-	return rect{0, 360, statusPanelWidth, 424}
+	return rect{0, 416, statusPanelWidth, 480}
 }
 
 func closeButtonRect() rect {
@@ -618,7 +681,15 @@ func closeButtonRect() rect {
 }
 
 func downloadsButtonRect() rect {
-	return rect{0, 304, statusPanelWidth, 358}
+	return rect{0, 360, statusPanelWidth, 414}
+}
+
+func pauseButtonRect() rect {
+	return rect{238, 315, 280, 347}
+}
+
+func cancelButtonRect() rect {
+	return rect{294, 315, 336, 347}
 }
 
 func closeStatusPanel() {
@@ -630,11 +701,17 @@ func closeStatusPanel() {
 }
 
 func hoverAtPoint(x, y int32) int {
-	if pointInRect(x, y, downloadsButtonRect()) {
+	if pointInRect(x, y, pauseButtonRect()) {
 		return 1
 	}
-	if pointInRect(x, y, exitButtonRect()) {
+	if pointInRect(x, y, cancelButtonRect()) {
 		return 2
+	}
+	if pointInRect(x, y, downloadsButtonRect()) {
+		return 3
+	}
+	if pointInRect(x, y, exitButtonRect()) {
+		return 4
 	}
 	return 0
 }
@@ -657,6 +734,48 @@ func openCurrentDownloadLocation() {
 		}
 	}
 	openDownloadsFolder()
+}
+
+func toggleActiveTrayTaskPause() {
+	summary := currentTraySummary()
+	if summary.Kind != "download" || summary.ID == "" || localDownloaderServer == nil {
+		return
+	}
+	localDownloaderServer.mu.Lock()
+	t := localDownloaderServer.tasks[summary.ID]
+	localDownloaderServer.mu.Unlock()
+	if t == nil {
+		return
+	}
+	if summary.RawState == "paused" {
+		t.resume()
+	} else if summary.RawState == "downloading" {
+		t.pause()
+	}
+	procInvalidateRect.Call(statusPanelHwnd, 0, 0)
+}
+
+func cancelActiveTrayTask() {
+	summary := currentTraySummary()
+	if summary.ID == "" || localDownloaderServer == nil {
+		return
+	}
+	if summary.Kind == "download" {
+		localDownloaderServer.mu.Lock()
+		t := localDownloaderServer.tasks[summary.ID]
+		localDownloaderServer.mu.Unlock()
+		if t != nil {
+			t.cancelTask()
+		}
+	} else if summary.Kind == "upload" {
+		localDownloaderServer.mu.Lock()
+		t := localDownloaderServer.uploads[summary.ID]
+		localDownloaderServer.mu.Unlock()
+		if t != nil {
+			t.cancelTask()
+		}
+	}
+	procInvalidateRect.Call(statusPanelHwnd, 0, 0)
 }
 
 func revealDownloadedFile(path string) error {
@@ -694,14 +813,17 @@ func revealDownloadedFile(path string) error {
 	}
 	procShellExecute.Call(dialogOwner, uintptr(unsafe.Pointer(operation)), uintptr(unsafe.Pointer(explorer)), uintptr(unsafe.Pointer(args)), 0, swShownormal)
 	time.Sleep(260 * time.Millisecond)
-	bringExplorerToFront()
+	bringExplorerToFront(targetPath)
 	time.Sleep(520 * time.Millisecond)
-	bringExplorerToFront()
+	bringExplorerToFront(targetPath)
 	return nil
 }
 
-func bringExplorerToFront() {
+func bringExplorerToFront(targetPath string) {
 	var explorerWindow uintptr
+	var fallbackWindow uintptr
+	targetName := strings.ToLower(filepath.Base(targetPath))
+	targetDir := strings.ToLower(filepath.Base(filepath.Dir(targetPath)))
 	callback := syscall.NewCallback(func(hwnd uintptr, lparam uintptr) uintptr {
 		visible, _, _ := procIsWindowVisible.Call(hwnd)
 		if visible == 0 {
@@ -714,24 +836,64 @@ func bringExplorerToFront() {
 		}
 		name := syscall.UTF16ToString(className[:length])
 		if name == "CabinetWClass" || name == "ExploreWClass" {
+			if fallbackWindow == 0 {
+				fallbackWindow = hwnd
+			}
+			titleBuffer := make([]uint16, 512)
+			titleLength, _, _ := procGetWindowText.Call(hwnd, uintptr(unsafe.Pointer(&titleBuffer[0])), uintptr(len(titleBuffer)))
+			title := strings.ToLower(syscall.UTF16ToString(titleBuffer[:titleLength]))
+			if targetName != "" && strings.Contains(title, targetName) {
+				explorerWindow = hwnd
+				return 0
+			}
+			if targetDir != "" && strings.Contains(title, targetDir) {
+				explorerWindow = hwnd
+				return 0
+			}
 			explorerWindow = hwnd
-			return 0
 		}
 		return 1
 	})
 	procEnumWindows.Call(callback, 0)
+	if explorerWindow == 0 {
+		explorerWindow = fallbackWindow
+	}
 	if explorerWindow == 0 {
 		return
 	}
 	hwndTopMost := ^uintptr(0)
 	hwndNoTopMost := ^uintptr(1)
 	flags := uintptr(swpNoMove | swpNoSize | swpShowWindow)
+	procAllowForeground.Call(uintptr(asfwAny))
 	procShowWindow.Call(explorerWindow, swRestore)
 	procSetWindowPos.Call(explorerWindow, hwndTopMost, 0, 0, 0, 0, flags)
+	forceForegroundWindow(explorerWindow)
 	procBringWindowTop.Call(explorerWindow)
-	procSetForeground.Call(explorerWindow)
 	procSetWindowPos.Call(explorerWindow, hwndNoTopMost, 0, 0, 0, 0, flags)
-	procSetForeground.Call(explorerWindow)
+	forceForegroundWindow(explorerWindow)
+}
+
+func forceForegroundWindow(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	currentThread, _, _ := procGetCurrentThread.Call()
+	targetThread, _, _ := procGetWindowThread.Call(hwnd, 0)
+	foreground, _, _ := procGetForeground.Call()
+	foregroundThread := uintptr(0)
+	if foreground != 0 {
+		foregroundThread, _, _ = procGetWindowThread.Call(foreground, 0)
+	}
+	if foregroundThread != 0 && foregroundThread != currentThread {
+		procAttachThread.Call(currentThread, foregroundThread, 1)
+		defer procAttachThread.Call(currentThread, foregroundThread, 0)
+	}
+	if targetThread != 0 && targetThread != currentThread {
+		procAttachThread.Call(currentThread, targetThread, 1)
+		defer procAttachThread.Call(currentThread, targetThread, 0)
+	}
+	procSetForeground.Call(hwnd)
+	procSetFocus.Call(hwnd)
 }
 
 func chooseDownloadPath(defaultName string) (string, error) {
@@ -785,6 +947,89 @@ func chooseDownloadPath(defaultName string) (string, error) {
 		return "", syscall.Errno(code)
 	}
 	return syscall.UTF16ToString(fileBuffer), nil
+}
+
+func chooseUploadFiles() ([]uploadFileSelection, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	dialogOwner := createSaveDialogOwnerWindow()
+	createdDialogOwner := dialogOwner != 0
+	if dialogOwner == 0 {
+		dialogOwner = trayHwnd
+	}
+	if dialogOwner != 0 {
+		if createdDialogOwner {
+			defer procDestroyWindow.Call(dialogOwner)
+		}
+		procSetForeground.Call(dialogOwner)
+		procSetFocus.Call(dialogOwner)
+	}
+
+	fileBuffer := make([]uint16, 32768)
+	filter := []uint16{'所', '有', '文', '件', 0, '*', '.', '*', 0, 0}
+	title, _ := syscall.UTF16PtrFromString("选择要上传的文件")
+	ofn := openFileName{
+		StructSize: uint32(unsafe.Sizeof(openFileName{})),
+		Owner:      dialogOwner,
+		Filter:     &filter[0],
+		File:       &fileBuffer[0],
+		MaxFile:    uint32(len(fileBuffer)),
+		Title:      title,
+		Flags:      ofnExplorer | ofnEnableSizing | ofnHideReadOnly | ofnNoChangeDir | ofnPathMustExist | ofnFileMustExist | ofnAllowMultiSelect,
+	}
+	ok, _, _ := procGetOpenFileName.Call(uintptr(unsafe.Pointer(&ofn)))
+	if ok == 0 {
+		code, _, _ := procCommDlgError.Call()
+		if code == 0 {
+			return nil, errSavePathCancelled
+		}
+		return nil, syscall.Errno(code)
+	}
+	return parseSelectedUploadFiles(fileBuffer)
+}
+
+func parseSelectedUploadFiles(buffer []uint16) ([]uploadFileSelection, error) {
+	parts := []string{}
+	start := 0
+	for index, char := range buffer {
+		if char != 0 {
+			continue
+		}
+		if index == start {
+			break
+		}
+		parts = append(parts, syscall.UTF16ToString(buffer[start:index]))
+		start = index + 1
+	}
+	if len(parts) == 0 {
+		return nil, errSavePathCancelled
+	}
+	paths := []string{}
+	if len(parts) == 1 {
+		paths = append(paths, parts[0])
+	} else {
+		dir := parts[0]
+		for _, name := range parts[1:] {
+			paths = append(paths, filepath.Join(dir, name))
+		}
+	}
+	result := make([]uploadFileSelection, 0, len(paths))
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		result = append(result, uploadFileSelection{
+			Path: path,
+			Name: info.Name(),
+			Size: info.Size(),
+		})
+	}
+	if len(result) == 0 {
+		return nil, errSavePathCancelled
+	}
+	return result, nil
 }
 
 func createSaveDialogOwnerWindow() uintptr {
