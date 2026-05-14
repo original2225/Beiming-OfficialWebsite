@@ -76,26 +76,6 @@ button:disabled {
   min-height: 38px;
 }
 
-.notification-button {
-  position: relative;
-}
-
-.notification-badge {
-  align-items: center;
-  background: #b83c2d;
-  border-radius: 999px;
-  color: #fff;
-  display: inline-flex;
-  font-size: 11px;
-  height: 18px;
-  justify-content: center;
-  min-width: 18px;
-  padding: 0 5px;
-  position: absolute;
-  right: -4px;
-  top: -4px;
-}
-
 .role {
   background: #dce8e3;
   border-radius: 999px;
@@ -135,10 +115,6 @@ button:disabled {
   display: grid;
   gap: 16px;
   grid-template-columns: minmax(280px, 0.8fr) minmax(320px, 1.2fr);
-  margin-bottom: 16px;
-}
-
-.notification-layout {
   margin-bottom: 16px;
 }
 
@@ -240,8 +216,7 @@ button:disabled {
 .member-list,
 .admin-list,
 .post-list,
-.comment-list,
-.notification-list {
+.comment-list {
   display: grid;
   gap: 8px;
   max-height: 380px;
@@ -277,39 +252,11 @@ button:disabled {
 }
 
 .board-strip,
-.action-row,
-.notification-toolbar,
-.notification-actions {
+.action-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-}
-
-.action-row,
-.notification-toolbar {
   margin: 0 0 12px;
-}
-
-.notification-toolbar {
-  align-items: center;
-  justify-content: space-between;
-}
-
-.notification-summary {
-  align-items: baseline;
-  display: flex;
-  gap: 10px;
-}
-
-.notification-summary strong {
-  color: #174c5c;
-  font-size: 28px;
-  line-height: 1;
-}
-
-.notification-summary span {
-  color: #65767b;
-  font-size: 13px;
 }
 
 .chip {
@@ -359,74 +306,9 @@ button:disabled {
   padding: 10px 12px;
 }
 
-.comment-row.highlighted {
-  background: #eef7f4;
-  border-color: #9ec8b8;
-}
-
 .comment-row p {
   color: #3c4f55;
   margin: 6px 0;
-}
-
-.notification-row {
-  align-items: stretch;
-  background: #f8faf9;
-  border: 1px solid #dbe4e1;
-  border-radius: 8px;
-  display: grid;
-  gap: 10px;
-  grid-template-columns: 1fr auto;
-  padding: 10px;
-}
-
-.notification-row.unread {
-  background: #eef7f4;
-  border-color: #b9d5cb;
-}
-
-.notification-main {
-  align-items: stretch;
-  background: transparent;
-  color: #1c2a2f;
-  display: grid;
-  gap: 8px;
-  justify-content: stretch;
-  min-height: 0;
-  padding: 0;
-  text-align: left;
-}
-
-.notification-main p {
-  color: #3c4f55;
-  line-height: 1.5;
-  margin: 0;
-}
-
-.notification-head,
-.notification-meta {
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-}
-
-.notification-archive {
-  align-self: center;
-  background: #e3ece8;
-  color: #27444b;
-}
-
-.notification-pagination {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-  margin-top: 12px;
-}
-
-.notification-pagination span {
-  color: #65767b;
-  font-size: 13px;
 }
 
 .comment-form {
