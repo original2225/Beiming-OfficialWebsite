@@ -15,14 +15,16 @@ public class PostService {
   private final AuthClient auth;
   private final ProfileClient profiles;
   private final PollService polls;
+  private final RateLimitService rateLimits;
 
-  PostService(PostRepository posts, BoardRepository boards, InteractionRepository interactions, AuthClient auth, ProfileClient profiles, PollService polls) {
+  PostService(PostRepository posts, BoardRepository boards, InteractionRepository interactions, AuthClient auth, ProfileClient profiles, PollService polls, RateLimitService rateLimits) {
     this.posts = posts;
     this.boards = boards;
     this.interactions = interactions;
     this.auth = auth;
     this.profiles = profiles;
     this.polls = polls;
+    this.rateLimits = rateLimits;
   }
 
   PageResult<PostSummaryView> publicPosts(String authorization, String boardId, int page, int pageSize, String q, String sort) {
@@ -53,8 +55,9 @@ public class PostService {
   }
 
   @Transactional
-  public synchronized PostDetailView create(String authorization, CreatePostRequest request) {
+  public PostDetailView create(String authorization, CreatePostRequest request) {
     var user = auth.requireUser(authorization);
+    rateLimits.posts(user);
     var board = requireBoard(CommunityRules.cleanRequired(request.boardId(), "板块不能为空"));
     if (!CommunityRules.canPostToBoard(user, board)) throw new ApiException(HttpStatus.FORBIDDEN, "没有该板块发帖权限");
     CommunityRules.validatePollRequest(request.poll());
@@ -97,8 +100,9 @@ public class PostService {
   }
 
   @Transactional
-  public synchronized PostDetailView update(String authorization, String postId, UpdatePostRequest request) {
+  public PostDetailView update(String authorization, String postId, UpdatePostRequest request) {
     var user = auth.requireUser(authorization);
+    rateLimits.posts(user);
     var current = posts.findById(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "帖子不存在"));
     CommunityRules.requireAuthorOrAdmin(user, current.authorUserId(), "没有权限编辑该帖子");
     if (current.locked() && !user.isAdmin()) throw new ApiException(HttpStatus.FORBIDDEN, "帖子已锁定");
@@ -140,8 +144,9 @@ public class PostService {
   }
 
   @Transactional
-  public synchronized void softDelete(String authorization, String postId) {
+  public void softDelete(String authorization, String postId) {
     var user = auth.requireUser(authorization);
+    rateLimits.posts(user);
     var current = posts.findById(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "帖子不存在"));
     CommunityRules.requireAuthorOrAdmin(user, current.authorUserId(), "没有权限删除该帖子");
     if (PostStatus.parse(current.status()) == PostStatus.DELETED) return;
@@ -164,7 +169,7 @@ public class PostService {
   }
 
   @Transactional
-  public synchronized PostDetailView moderate(String authorization, String postId, ModeratePostRequest request) {
+  public PostDetailView moderate(String authorization, String postId, ModeratePostRequest request) {
     var user = auth.requireUser(authorization);
     CommunityRules.requireAdmin(user);
     var current = posts.findById(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "帖子不存在"));

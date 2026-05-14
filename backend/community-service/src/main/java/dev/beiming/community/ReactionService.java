@@ -12,19 +12,22 @@ public class ReactionService {
   private final CommentService comments;
   private final CommentRepository commentRepository;
   private final AuthClient auth;
+  private final RateLimitService rateLimits;
 
-  ReactionService(InteractionRepository interactions, PostService posts, PostRepository postRepository, CommentService comments, CommentRepository commentRepository, AuthClient auth) {
+  ReactionService(InteractionRepository interactions, PostService posts, PostRepository postRepository, CommentService comments, CommentRepository commentRepository, AuthClient auth, RateLimitService rateLimits) {
     this.interactions = interactions;
     this.posts = posts;
     this.postRepository = postRepository;
     this.comments = comments;
     this.commentRepository = commentRepository;
     this.auth = auth;
+    this.rateLimits = rateLimits;
   }
 
   @Transactional
   public void likePost(String authorization, String postId) {
     var user = auth.requireUser(authorization);
+    rateLimits.reactions(user);
     var post = posts.requirePost(postId);
     if (!posts.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
     if (interactions.addPostLike(postId, user.id())) {
@@ -35,6 +38,7 @@ public class ReactionService {
   @Transactional
   public void unlikePost(String authorization, String postId) {
     var user = auth.requireUser(authorization);
+    rateLimits.reactions(user);
     if (interactions.removePostLike(postId, user.id())) {
       postRepository.adjustLikeCount(postId, -1);
     }
@@ -43,6 +47,7 @@ public class ReactionService {
   @Transactional
   public void likeComment(String authorization, String commentId) {
     var user = auth.requireUser(authorization);
+    rateLimits.reactions(user);
     var comment = comments.requireComment(commentId);
     var post = posts.requirePost(comment.postId());
     if (!posts.canViewPost(user, post) || CommentStatus.parse(comment.status()) != CommentStatus.VISIBLE) {
@@ -56,6 +61,7 @@ public class ReactionService {
   @Transactional
   public void unlikeComment(String authorization, String commentId) {
     var user = auth.requireUser(authorization);
+    rateLimits.reactions(user);
     if (interactions.removeCommentLike(commentId, user.id())) {
       commentRepository.adjustLikeCount(commentId, -1);
     }

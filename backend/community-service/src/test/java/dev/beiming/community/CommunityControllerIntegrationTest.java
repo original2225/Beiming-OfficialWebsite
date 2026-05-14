@@ -60,6 +60,7 @@ class CommunityControllerIntegrationTest {
 
   @BeforeEach
   void resetDatabase() {
+    jdbc.execute("delete from beiming_community_rate_limits");
     jdbc.execute("delete from beiming_community_poll_votes");
     jdbc.execute("delete from beiming_community_poll_options");
     jdbc.execute("delete from beiming_community_polls");
@@ -258,6 +259,28 @@ class CommunityControllerIntegrationTest {
   }
 
   @Test
+  void postCreationRateLimitRejectsBurstWrites() throws Exception {
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    var boardId = boardId("help");
+
+    for (var i = 0; i < 8; i++) {
+      createPost("member-token", boardId, "限流帖子 " + i, "body", "PUBLISHED", "PUBLIC", null);
+    }
+
+    mvc.perform(post("/api/community/posts")
+        .header("Authorization", bearer("member-token"))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(json(Map.of(
+          "boardId", boardId,
+          "title", "第九个帖子",
+          "content", "too fast",
+          "status", "PUBLISHED",
+          "visibility", "PUBLIC"
+        ))))
+      .andExpect(status().isTooManyRequests());
+  }
+
+  @Test
   void authorAndAdminCanEditButOtherMemberCannot() throws Exception {
     auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
     auth.login("other-token", new CurrentUserView("user-other", "Other", "other@example.com", "MEMBER"));
@@ -339,6 +362,24 @@ class CommunityControllerIntegrationTest {
   }
 
   @Test
+  void commentListIsPaginated() throws Exception {
+    auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    var postId = createPost("author-token", boardId("help"), "分页问题", "请教", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+    createComment("member-token", postId, "第一条");
+    createComment("member-token", postId, "第二条");
+    createComment("member-token", postId, "第三条");
+
+    mvc.perform(get("/api/community/posts/" + postId + "/comments?page=2&pageSize=2").header("Authorization", bearer("member-token")))
+      .andExpect(status().isOk())
+      .andExpect(jsonPath("$.data.total").value(3))
+      .andExpect(jsonPath("$.data.page").value(2))
+      .andExpect(jsonPath("$.data.pageSize").value(2))
+      .andExpect(jsonPath("$.data.items.length()").value(1))
+      .andExpect(jsonPath("$.data.items[0].content").value("第三条"));
+  }
+
+  @Test
   void likesAndFavoritesAreIdempotent() throws Exception {
     auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
     auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
@@ -366,7 +407,7 @@ class CommunityControllerIntegrationTest {
 
     mvc.perform(get("/api/community/posts/" + postId + "/comments").header("Authorization", bearer("author-token")))
       .andExpect(status().isOk())
-      .andExpect(jsonPath("$.data[0].likeCount").value(1));
+      .andExpect(jsonPath("$.data.items[0].likeCount").value(1));
 
     mvc.perform(delete("/api/community/posts/" + postId + "/reactions").header("Authorization", bearer("member-token")))
       .andExpect(status().isOk());
@@ -413,7 +454,7 @@ class CommunityControllerIntegrationTest {
 
     mvc.perform(get("/api/community/posts/" + postId + "/comments").header("Authorization", bearer("author-token")))
       .andExpect(status().isOk())
-      .andExpect(jsonPath("$.data[0].likeCount").value(1));
+      .andExpect(jsonPath("$.data.items[0].likeCount").value(1));
   }
 
   @Test

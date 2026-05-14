@@ -15,29 +15,35 @@ public class CommentService {
   private final InteractionRepository interactions;
   private final AuthClient auth;
   private final ProfileClient profiles;
+  private final RateLimitService rateLimits;
 
-  CommentService(CommentRepository comments, PostService posts, PostRepository postRepository, InteractionRepository interactions, AuthClient auth, ProfileClient profiles) {
+  CommentService(CommentRepository comments, PostService posts, PostRepository postRepository, InteractionRepository interactions, AuthClient auth, ProfileClient profiles, RateLimitService rateLimits) {
     this.comments = comments;
     this.posts = posts;
     this.postRepository = postRepository;
     this.interactions = interactions;
     this.auth = auth;
     this.profiles = profiles;
+    this.rateLimits = rateLimits;
   }
 
-  List<CommentView> list(String authorization, String postId) {
+  PageResult<CommentView> list(String authorization, String postId, int page, int pageSize) {
     var viewer = auth.optionalUser(authorization);
     var post = posts.requirePost(postId);
     if (!posts.canViewPost(viewer, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
-    return comments.byPostId(postId).stream()
-      .filter(comment -> CommunityRules.canViewComment(viewer, comment))
+    var normalizedPage = CommunityRules.normalizePage(page);
+    var normalizedSize = CommunityRules.normalizePageSize(pageSize);
+    var includeHidden = viewer != null && viewer.isAdmin();
+    var items = comments.pageByPostId(postId, includeHidden, normalizedPage, normalizedSize).stream()
       .map(comment -> CommentView.fromRecord(comment, viewer != null && interactions.hasCommentLike(comment.id(), viewer.id())))
       .toList();
+    return new PageResult<>(items, normalizedPage, normalizedSize, comments.countByPostId(postId, includeHidden));
   }
 
   @Transactional
-  public synchronized CommentView create(String authorization, String postId, CreateCommentRequest request) {
+  public CommentView create(String authorization, String postId, CreateCommentRequest request) {
     var user = auth.requireUser(authorization);
+    rateLimits.comments(user);
     var post = posts.requirePost(postId);
     if (!posts.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
     if (post.locked() && !user.isAdmin()) throw new ApiException(HttpStatus.FORBIDDEN, "帖子已锁定");
@@ -72,8 +78,9 @@ public class CommentService {
   }
 
   @Transactional
-  public synchronized CommentView update(String authorization, String commentId, UpdateCommentRequest request) {
+  public CommentView update(String authorization, String commentId, UpdateCommentRequest request) {
     var user = auth.requireUser(authorization);
+    rateLimits.comments(user);
     var current = comments.findById(commentId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "评论不存在"));
     CommunityRules.requireAuthorOrAdmin(user, current.authorUserId(), "没有权限编辑该评论");
     var post = posts.requirePost(current.postId());
@@ -104,8 +111,9 @@ public class CommentService {
   }
 
   @Transactional
-  public synchronized void softDelete(String authorization, String commentId) {
+  public void softDelete(String authorization, String commentId) {
     var user = auth.requireUser(authorization);
+    rateLimits.comments(user);
     var current = comments.findById(commentId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "评论不存在"));
     CommunityRules.requireAuthorOrAdmin(user, current.authorUserId(), "没有权限删除该评论");
     if (CommentStatus.parse(current.status()) == CommentStatus.DELETED) return;
@@ -120,7 +128,7 @@ public class CommentService {
   }
 
   @Transactional
-  public synchronized CommentView moderate(String authorization, String commentId, ModerateCommentRequest request) {
+  public CommentView moderate(String authorization, String commentId, ModerateCommentRequest request) {
     var user = auth.requireUser(authorization);
     CommunityRules.requireAdmin(user);
     var current = comments.findById(commentId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "评论不存在"));

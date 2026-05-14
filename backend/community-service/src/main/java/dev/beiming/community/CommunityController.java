@@ -98,11 +98,13 @@ public class CommunityController {
   }
 
   @GetMapping("/api/community/posts/{postId}/comments")
-  ApiEnvelope<List<CommentView>> commentList(
+  ApiEnvelope<PageResult<CommentView>> commentList(
     @RequestHeader(value = "Authorization", defaultValue = "") String authorization,
-    @PathVariable String postId
+    @PathVariable String postId,
+    @RequestParam(defaultValue = "1") int page,
+    @RequestParam(defaultValue = "20") int pageSize
   ) {
-    return ApiEnvelope.ok(comments.list(authorization, postId));
+    return ApiEnvelope.ok(comments.list(authorization, postId, page, pageSize));
   }
 
   @PostMapping("/api/community/posts/{postId}/comments")

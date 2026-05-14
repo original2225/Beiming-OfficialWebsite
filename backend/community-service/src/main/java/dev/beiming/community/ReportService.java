@@ -12,17 +12,20 @@ public class ReportService {
   private final PostService posts;
   private final CommentService comments;
   private final AuthClient auth;
+  private final RateLimitService rateLimits;
 
-  ReportService(ReportRepository reports, PostService posts, CommentService comments, AuthClient auth) {
+  ReportService(ReportRepository reports, PostService posts, CommentService comments, AuthClient auth, RateLimitService rateLimits) {
     this.reports = reports;
     this.posts = posts;
     this.comments = comments;
     this.auth = auth;
+    this.rateLimits = rateLimits;
   }
 
   @Transactional
   public synchronized ReportView reportPost(String authorization, String postId, CreateReportRequest request) {
     var user = auth.requireUser(authorization);
+    rateLimits.reports(user);
     var post = posts.requirePost(postId);
     if (!posts.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
     return createReport(user, ReportTargetType.POST.name(), postId, request);
@@ -31,6 +34,7 @@ public class ReportService {
   @Transactional
   public synchronized ReportView reportComment(String authorization, String commentId, CreateReportRequest request) {
     var user = auth.requireUser(authorization);
+    rateLimits.reports(user);
     var comment = comments.requireComment(commentId);
     var post = posts.requirePost(comment.postId());
     if (!posts.canViewPost(user, post) || CommentStatus.parse(comment.status()) != CommentStatus.VISIBLE) {

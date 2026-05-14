@@ -37,6 +37,23 @@ public class CommentRepository {
     return jdbc.query("select * from beiming_community_comments where post_id = ? order by created_at asc", mapper, postId);
   }
 
+  List<CommentRecord> pageByPostId(String postId, boolean includeHidden, int page, int pageSize) {
+    var visibilitySql = includeHidden ? "" : " and status = 'VISIBLE'";
+    return jdbc.query(
+      "select * from beiming_community_comments where post_id = ?" + visibilitySql + " order by created_at asc, id asc limit ? offset ?",
+      mapper,
+      postId,
+      pageSize,
+      (page - 1) * pageSize
+    );
+  }
+
+  int countByPostId(String postId, boolean includeHidden) {
+    var visibilitySql = includeHidden ? "" : " and status = 'VISIBLE'";
+    var count = jdbc.queryForObject("select count(*) from beiming_community_comments where post_id = ?" + visibilitySql, Integer.class, postId);
+    return count == null ? 0 : count;
+  }
+
   Optional<CommentRecord> findById(String commentId) {
     return jdbc.query("select * from beiming_community_comments where id = ?", mapper, commentId).stream().findFirst();
   }

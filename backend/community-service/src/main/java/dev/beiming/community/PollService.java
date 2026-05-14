@@ -14,16 +14,18 @@ public class PollService {
   private final PostRepository posts;
   private final BoardRepository boards;
   private final AuthClient auth;
+  private final RateLimitService rateLimits;
 
-  PollService(PollRepository polls, PostRepository posts, BoardRepository boards, AuthClient auth) {
+  PollService(PollRepository polls, PostRepository posts, BoardRepository boards, AuthClient auth, RateLimitService rateLimits) {
     this.polls = polls;
     this.posts = posts;
     this.boards = boards;
     this.auth = auth;
+    this.rateLimits = rateLimits;
   }
 
   @Transactional
-  public synchronized void createForPost(String postId, CreatePollRequest request) {
+  public void createForPost(String postId, CreatePollRequest request) {
     CommunityRules.validatePollRequest(request);
     if (request == null) return;
     var now = CommunityRules.now();
@@ -61,8 +63,9 @@ public class PollService {
   }
 
   @Transactional
-  public synchronized PollView vote(String authorization, String postId, CastPollVoteRequest request) {
+  public PollView vote(String authorization, String postId, CastPollVoteRequest request) {
     var user = auth.requireUser(authorization);
+    rateLimits.polls(user);
     var post = posts.findById(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "帖子不存在"));
     if (!canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
     if (post.locked() && !user.isAdmin()) throw new ApiException(HttpStatus.FORBIDDEN, "帖子已锁定");
@@ -80,8 +83,9 @@ public class PollService {
   }
 
   @Transactional
-  public synchronized PollView retract(String authorization, String postId) {
+  public PollView retract(String authorization, String postId) {
     var user = auth.requireUser(authorization);
+    rateLimits.polls(user);
     var poll = polls.findByPostId(postId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "投票不存在"));
     ensureOpen(poll);
     polls.removeVotes(poll.id(), user.id());
