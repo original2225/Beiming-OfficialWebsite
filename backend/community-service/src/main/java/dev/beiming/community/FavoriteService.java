@@ -19,20 +19,20 @@ public class FavoriteService {
   }
 
   @Transactional
-  public synchronized void favorite(String authorization, String postId) {
+  public void favorite(String authorization, String postId) {
     var user = auth.requireUser(authorization);
     var post = posts.requirePost(postId);
     if (!posts.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
-    if (interactions.hasFavorite(postId, user.id())) return;
-    interactions.addFavorite(postId, user.id());
-    postRepository.adjustFavoriteCount(postId, 1);
+    if (interactions.addFavorite(postId, user.id())) {
+      postRepository.adjustFavoriteCount(postId, 1);
+    }
   }
 
   @Transactional
-  public synchronized void unfavorite(String authorization, String postId) {
+  public void unfavorite(String authorization, String postId) {
     var user = auth.requireUser(authorization);
-    if (!interactions.hasFavorite(postId, user.id())) return;
-    interactions.removeFavorite(postId, user.id());
-    postRepository.adjustFavoriteCount(postId, -1);
+    if (interactions.removeFavorite(postId, user.id())) {
+      postRepository.adjustFavoriteCount(postId, -1);
+    }
   }
 }

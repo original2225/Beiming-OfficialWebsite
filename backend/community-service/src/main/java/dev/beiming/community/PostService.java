@@ -31,12 +31,8 @@ public class PostService {
       var board = requireBoard(boardId);
       if (!CommunityRules.canViewBoard(viewer, board.visibility())) throw new ApiException(HttpStatus.NOT_FOUND, "板块不存在");
     }
-    var contentVisibilities = viewer != null && viewer.isAdmin()
-      ? List.of("PUBLIC", "MEMBER_ONLY", "ADMIN_ONLY")
-      : viewer != null ? List.of("PUBLIC", "MEMBER_ONLY") : List.of("PUBLIC");
-    var boardVisibilities = viewer != null && viewer.isAdmin()
-      ? List.of("PUBLIC", "MEMBER_ONLY", "ADMIN_ONLY", "HIDDEN")
-      : viewer != null ? List.of("PUBLIC", "MEMBER_ONLY") : List.of("PUBLIC");
+    var contentVisibilities = contentVisibilitiesFor(viewer);
+    var boardVisibilities = boardVisibilitiesFor(viewer);
     var normalizedPage = CommunityRules.normalizePage(page);
     var normalizedSize = CommunityRules.normalizePageSize(pageSize);
     var items = posts.publicList(contentVisibilities, boardVisibilities, boardId, q, sort, normalizedPage, normalizedSize).stream()
@@ -211,11 +207,12 @@ public class PostService {
     var user = auth.requireUser(authorization);
     var normalizedPage = CommunityRules.normalizePage(page);
     var normalizedSize = CommunityRules.normalizePageSize(pageSize);
-    var items = posts.favoriteList(user.id(), normalizedPage, normalizedSize).stream()
-      .filter(post -> canViewPost(user, post))
+    var contentVisibilities = contentVisibilitiesFor(user);
+    var boardVisibilities = boardVisibilitiesFor(user);
+    var items = posts.favoriteList(user.id(), contentVisibilities, boardVisibilities, normalizedPage, normalizedSize).stream()
       .map(PostSummaryView::fromRecord)
       .toList();
-    return new PageResult<>(items, normalizedPage, normalizedSize, posts.countFavorites(user.id()));
+    return new PageResult<>(items, normalizedPage, normalizedSize, posts.countFavorites(user.id(), contentVisibilities, boardVisibilities));
   }
 
   PostRecord requirePost(String postId) {
@@ -230,6 +227,18 @@ public class PostService {
 
   private BoardRecord requireBoard(String boardId) {
     return boards.findById(boardId).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "板块不存在"));
+  }
+
+  private List<String> contentVisibilitiesFor(CurrentUserView viewer) {
+    return viewer != null && viewer.isAdmin()
+      ? List.of("PUBLIC", "MEMBER_ONLY", "ADMIN_ONLY")
+      : viewer != null ? List.of("PUBLIC", "MEMBER_ONLY") : List.of("PUBLIC");
+  }
+
+  private List<String> boardVisibilitiesFor(CurrentUserView viewer) {
+    return viewer != null && viewer.isAdmin()
+      ? List.of("PUBLIC", "MEMBER_ONLY", "ADMIN_ONLY", "HIDDEN")
+      : viewer != null ? List.of("PUBLIC", "MEMBER_ONLY") : List.of("PUBLIC");
   }
 
   PostDetailView toDetail(PostRecord post, CurrentUserView viewer, String authorization) {

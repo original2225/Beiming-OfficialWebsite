@@ -5,7 +5,9 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 @Repository
 public class PollRepository {
@@ -56,9 +58,17 @@ public class PollRepository {
     );
   }
 
-  long countVotesForOption(String optionId) {
-    var count = jdbc.queryForObject("select count(*) from beiming_community_poll_votes where option_id = ?", Long.class, optionId);
-    return count == null ? 0L : count;
+  Map<String, Long> countVotesByOption(String pollId) {
+    return jdbc.query(
+      """
+        select option_id, count(*) as vote_count
+        from beiming_community_poll_votes
+        where poll_id = ?
+        group by option_id
+      """,
+      (rs, rowNum) -> Map.entry(rs.getString("option_id"), rs.getLong("vote_count")),
+      pollId
+    ).stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
   }
 
   long totalVotes(String pollId) {

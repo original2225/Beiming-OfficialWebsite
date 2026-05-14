@@ -18,7 +18,11 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -374,6 +378,71 @@ class CommunityControllerIntegrationTest {
     mvc.perform(get("/api/community/me/favorites").header("Authorization", bearer("member-token")))
       .andExpect(status().isOk())
       .andExpect(jsonPath("$.data.items.length()").value(0));
+  }
+
+  @Test
+  void concurrentDuplicateLikesAndFavoritesStayIdempotent() throws Exception {
+    auth.login("author-token", new CurrentUserView("user-author", "Author", "author@example.com", "MEMBER"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    var postId = createPost("author-token", boardId("resources"), "并发资源", "download", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+    var commentId = createComment("member-token", postId, "并发不错").at("/data/id").asText();
+    var failures = new AtomicInteger();
+    var pool = Executors.newFixedThreadPool(12);
+    for (var i = 0; i < 24; i++) {
+      pool.submit(() -> {
+        try {
+          mvc.perform(post("/api/community/posts/" + postId + "/reactions").header("Authorization", bearer("member-token")))
+            .andExpect(status().isOk());
+          mvc.perform(post("/api/community/posts/" + postId + "/favorites").header("Authorization", bearer("member-token")))
+            .andExpect(status().isOk());
+          mvc.perform(post("/api/community/comments/" + commentId + "/reactions").header("Authorization", bearer("author-token")))
+            .andExpect(status().isOk());
+        } catch (Exception ignored) {
+          failures.incrementAndGet();
+        }
+      });
+    }
+    pool.shutdown();
+    assertThat(pool.awaitTermination(20, TimeUnit.SECONDS)).isTrue();
+    assertThat(failures.get()).isZero();
+
+    mvc.perform(get("/api/community/posts/" + postId).header("Authorization", bearer("member-token")))
+      .andExpect(status().isOk())
+      .andExpect(jsonPath("$.data.likeCount").value(1))
+      .andExpect(jsonPath("$.data.favoriteCount").value(1));
+
+    mvc.perform(get("/api/community/posts/" + postId + "/comments").header("Authorization", bearer("author-token")))
+      .andExpect(status().isOk())
+      .andExpect(jsonPath("$.data[0].likeCount").value(1));
+  }
+
+  @Test
+  void favoriteListFiltersInvisiblePostsBeforePaginationAndCount() throws Exception {
+    auth.login("admin-token", new CurrentUserView("user-admin", "Admin", "admin@example.com", "ADMIN"));
+    auth.login("member-token", new CurrentUserView("user-member", "Member", "member@example.com", "MEMBER"));
+    var visiblePostId = createPost("member-token", boardId("resources"), "可见收藏", "visible", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+    var hiddenPostId = createPost("admin-token", boardId("archive"), "不可见收藏", "hidden", "PUBLISHED", "PUBLIC", null).at("/data/id").asText();
+
+    jdbc.update(
+      "insert into beiming_community_post_favorites (id, post_id, user_id, created_at) values (?, ?, ?, ?)",
+      "favorite-" + UUID.randomUUID(),
+      visiblePostId,
+      "user-member",
+      10L
+    );
+    jdbc.update(
+      "insert into beiming_community_post_favorites (id, post_id, user_id, created_at) values (?, ?, ?, ?)",
+      "favorite-" + UUID.randomUUID(),
+      hiddenPostId,
+      "user-member",
+      20L
+    );
+
+    mvc.perform(get("/api/community/me/favorites?pageSize=1").header("Authorization", bearer("member-token")))
+      .andExpect(status().isOk())
+      .andExpect(jsonPath("$.data.total").value(1))
+      .andExpect(jsonPath("$.data.items.length()").value(1))
+      .andExpect(jsonPath("$.data.items[0].title").value("可见收藏"));
   }
 
   @Test

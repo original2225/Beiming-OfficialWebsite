@@ -23,41 +23,41 @@ public class ReactionService {
   }
 
   @Transactional
-  public synchronized void likePost(String authorization, String postId) {
+  public void likePost(String authorization, String postId) {
     var user = auth.requireUser(authorization);
     var post = posts.requirePost(postId);
     if (!posts.canViewPost(user, post)) throw new ApiException(HttpStatus.NOT_FOUND, "帖子不存在");
-    if (interactions.hasPostLike(postId, user.id())) return;
-    interactions.addPostLike(postId, user.id());
-    postRepository.adjustLikeCount(postId, 1);
+    if (interactions.addPostLike(postId, user.id())) {
+      postRepository.adjustLikeCount(postId, 1);
+    }
   }
 
   @Transactional
-  public synchronized void unlikePost(String authorization, String postId) {
+  public void unlikePost(String authorization, String postId) {
     var user = auth.requireUser(authorization);
-    if (!interactions.hasPostLike(postId, user.id())) return;
-    interactions.removePostLike(postId, user.id());
-    postRepository.adjustLikeCount(postId, -1);
+    if (interactions.removePostLike(postId, user.id())) {
+      postRepository.adjustLikeCount(postId, -1);
+    }
   }
 
   @Transactional
-  public synchronized void likeComment(String authorization, String commentId) {
+  public void likeComment(String authorization, String commentId) {
     var user = auth.requireUser(authorization);
     var comment = comments.requireComment(commentId);
     var post = posts.requirePost(comment.postId());
     if (!posts.canViewPost(user, post) || CommentStatus.parse(comment.status()) != CommentStatus.VISIBLE) {
       throw new ApiException(HttpStatus.NOT_FOUND, "评论不存在");
     }
-    if (interactions.hasCommentLike(commentId, user.id())) return;
-    interactions.addCommentLike(commentId, user.id());
-    commentRepository.adjustLikeCount(commentId, 1);
+    if (interactions.addCommentLike(commentId, user.id())) {
+      commentRepository.adjustLikeCount(commentId, 1);
+    }
   }
 
   @Transactional
-  public synchronized void unlikeComment(String authorization, String commentId) {
+  public void unlikeComment(String authorization, String commentId) {
     var user = auth.requireUser(authorization);
-    if (!interactions.hasCommentLike(commentId, user.id())) return;
-    interactions.removeCommentLike(commentId, user.id());
-    commentRepository.adjustLikeCount(commentId, -1);
+    if (interactions.removeCommentLike(commentId, user.id())) {
+      commentRepository.adjustLikeCount(commentId, -1);
+    }
   }
 }

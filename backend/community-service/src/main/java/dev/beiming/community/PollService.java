@@ -116,12 +116,13 @@ public class PollService {
       };
     }
     var canShowResults = resultsVisible;
+    var voteCounts = canShowResults ? polls.countVotesByOption(poll.id()) : java.util.Map.<String, Long>of();
     var options = optionRecords.stream()
       .map(option -> new PollOptionView(
         option.id(),
         option.optionText(),
         option.sortOrder(),
-        canShowResults ? polls.countVotesForOption(option.id()) : 0L
+        voteCounts.getOrDefault(option.id(), 0L)
       ))
       .toList();
     return new PollView(

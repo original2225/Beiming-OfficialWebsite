@@ -198,25 +198,55 @@ public class PostRepository {
     return count == null ? 0 : count;
   }
 
-  List<PostRecord> favoriteList(String userId, int page, int pageSize) {
-    return jdbc.query(
+  List<PostRecord> favoriteList(String userId, List<String> contentVisibilities, List<String> boardVisibilities, int page, int pageSize) {
+    var sql = new StringBuilder(
       """
         select p.* from beiming_community_post_favorites f
         join beiming_community_posts p on p.id = f.post_id
+        join beiming_community_boards b on b.id = p.board_id
         where f.user_id = ?
-        order by f.created_at desc
-        limit ? offset ?
-      """,
-      mapper,
-      userId,
-      pageSize,
-      (page - 1) * pageSize
+          and p.status = 'PUBLISHED'
+          and p.review_status = 'APPROVED'
+      """
     );
+    var args = new ArrayList<Object>();
+    args.add(userId);
+    appendVisibilityFilter(sql, args, "p.visibility", contentVisibilities);
+    appendVisibilityFilter(sql, args, "b.visibility", boardVisibilities);
+    sql.append(" order by f.created_at desc limit ? offset ?");
+    args.add(pageSize);
+    args.add((page - 1) * pageSize);
+    return jdbc.query(sql.toString(), mapper, args.toArray());
   }
 
-  int countFavorites(String userId) {
-    var count = jdbc.queryForObject("select count(*) from beiming_community_post_favorites where user_id = ?", Integer.class, userId);
+  int countFavorites(String userId, List<String> contentVisibilities, List<String> boardVisibilities) {
+    var sql = new StringBuilder(
+      """
+        select count(*) from beiming_community_post_favorites f
+        join beiming_community_posts p on p.id = f.post_id
+        join beiming_community_boards b on b.id = p.board_id
+        where f.user_id = ?
+          and p.status = 'PUBLISHED'
+          and p.review_status = 'APPROVED'
+      """
+    );
+    var args = new ArrayList<Object>();
+    args.add(userId);
+    appendVisibilityFilter(sql, args, "p.visibility", contentVisibilities);
+    appendVisibilityFilter(sql, args, "b.visibility", boardVisibilities);
+    var count = jdbc.queryForObject(sql.toString(), Integer.class, args.toArray());
     return count == null ? 0 : count;
+  }
+
+  private void appendVisibilityFilter(StringBuilder sql, List<Object> args, String column, List<String> visibilities) {
+    if (visibilities.isEmpty()) return;
+    sql.append(" and ").append(column).append(" in (");
+    for (var i = 0; i < visibilities.size(); i++) {
+      if (i > 0) sql.append(", ");
+      sql.append("?");
+      args.add(visibilities.get(i));
+    }
+    sql.append(")");
   }
 
   void insert(PostRecord record) {
